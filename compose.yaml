@@ -1,0 +1,25 @@
+services:
+  bot-api-server:
+    image: aiogram/telegram-bot-api:latest
+    container_name: tg_bot_api_server
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+      - TELEGRAM_LOCAL=1
+      - TELEGRAM_WORK_DIR=/var/lib/telegram-bot-api
+    volumes:
+      - ./data:/var/lib/telegram-bot-api
+
+  tg-bot:
+    build: .
+    container_name: douyin_tg_bot
+    restart: unless-stopped
+    depends_on:
+      - bot-api-server
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - API_BASE_URL=https://douyin.wtf
+      - LOCAL_API_SERVER=http://bot-api-server:8081
+    volumes:
+      - ./data:/var/lib/telegram-bot-api
