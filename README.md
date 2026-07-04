@@ -26,12 +26,15 @@ TELEGRAM_API_HASH=abcdef1234567890abcdef1234567890
 
 # 去 @BotFather 申请
 BOT_TOKEN=123456789:ABCdefGHIjklmNOPQrstUVwxyZ
+
+# 建议自建API
+API_BASE_URL=https://douyin.wtf
 ```
 
 ### 2. 一键启动
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 启动后，向你的 Bot 发送一段抖音分享口令即可体验！
