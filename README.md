@@ -4,6 +4,7 @@
 ![Docker Image Size (tag)](https://img.shields.io/docker/image-size/yushum/douyin-tiktok-telegram-bot/latest?style=flat-square)
 ![GitHub License](https://img.shields.io/github/license/yushum/Douyin-Tiktok-Telegram-Bot?style=flat-square)
 ![Multi-Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-blue?style=flat-square)
+![Docker Image Version (latest semver)](https://img.shields.io/docker/v/yushum/douyin-tiktok-telegram-bot?sort=semver&style=flat-square)
 
 这是一个基于 Python `aiogram` 框架构建的高性能 Telegram 机器人，专门用于将抖音和 TikTok 的分享链接解析为无水印视频或图集，并在 Telegram 中原生发送。
 
