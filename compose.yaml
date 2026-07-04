@@ -12,7 +12,7 @@ services:
       - ./data:/var/lib/telegram-bot-api
 
   tg-bot:
-    build: .
+    image: yushum/douyin-tiktok-telegram-bot:latest
     container_name: douyin_tg_bot
     restart: unless-stopped
     depends_on:
