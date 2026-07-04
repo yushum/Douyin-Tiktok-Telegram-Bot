@@ -12,10 +12,10 @@
 
 - **超清无损**：自动探测并拉取抖音底层 CDN 提供的最高分辨率源文件 (最高支持 4K)。
 - **实况与图集支持**：完美解析抖音图集和实况照片，以无损图片流 (MediaGroup) 形式发送。
-- **2GB 大文件突破**：基于双容器共享数据卷架构打通 Telegram Local API Server，彻底告别官方 50MB 传输限制，最高支持 2GB 的长视频（如电影解说）极速直传。
+- **2GB 大文件突破**：基于双容器共享数据卷架构打通 Telegram Local API Server，彻底告别官方 50MB 传输限制，最高支持 2GB 的长视频极速直传。
 - **防盗链穿透**：通过内存缓冲与伪装请求，有效绕过抖音图集和视频封面的 `403 Forbidden` 严格防盗链机制。
-- **全场景适配**：私聊即时响应；支持频道 (Channel) 静默发布与带链接原帖自动清理；群组模式下智能嗅探短链接，实现纯净防打扰。
-- **安全防滥用**：内置轻量级白名单机制，支持配置允许交互的用户或群组，未授权访问将直接被忽略。
+- **全场景适配**：私聊即时响应；支持频道静默发布与带链接原帖自动清理；群组模式下智能嗅探短链接，实现纯净防打扰。
+- **安全防滥用**：内置多维白名单机制，支持精细化配置授权的用户、群组或频道。
 
 ## 📦 快速部署
 
@@ -34,7 +34,7 @@ BOT_TOKEN=123456789:ABCdefGHIjklmNOPQrstUVwxyZ
 # 默认使用开源演示节点，为保证稳定性，强烈建议自行部署该 API
 API_BASE_URL=https://douyin.wtf
 
-# (可选) 白名单隔离：仅允许特定的 User ID 或 Chat ID 使用。多个 ID 用逗号分隔。不填则表示全员公开。
+# (可选) 白名单配置：填入允许交互的用户ID或群组/频道ID，多个ID用逗号分隔。不填则全员公开。
 ALLOWED_CHAT_IDS=123456789,-100987654321
 ```
 
@@ -47,8 +47,6 @@ docker compose up -d
 ```
 *(默认拉取 latest 标签，始终保持最新。如需锁定版本，可在 compose.yaml 中将 image 修改为特定版本号，例如 yushum/douyin-tiktok-telegram-bot:1.0.0)*
 
-启动后，直接向你的 Bot 发送一段抖音分享口令即可体验！
-
 ## 🛠 高级：从源码构建
 
 如果你希望自行修改代码或进行二次开发，可以使用以下命令在本地重新构建镜像（无需拉取官方镜像）：
@@ -58,9 +56,6 @@ docker compose up -d
 docker compose up -d --build
 ```
 
-## 🙏 致谢 (Acknowledgements)
+## 🙏 致谢
 
-本项目站在巨人的肩膀上，特别感谢：
-
-- [Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API) - 提供稳定、高性能的抖音/TikTok 数据解析核心 API 支持。
-- **Google Gemini** - 在本项目的架构设计、长视频传输突破、防盗链降级策略以及异步代码重构方面提供了全流程的结对编程指导与技术支持。
+- [Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API) - 提供底层数据解析核心 API 支持。

@@ -18,7 +18,6 @@ API_BASE_URL = os.environ.get("API_BASE_URL", "https://douyin.wtf")
 LOCAL_API_SERVER = os.environ.get("LOCAL_API_SERVER")
 ALLOWED_CHAT_IDS_STR = os.environ.get("ALLOWED_CHAT_IDS", "")
 
-# 解析白名单 ID
 ALLOWED_CHAT_IDS = []
 if ALLOWED_CHAT_IDS_STR:
     for x in ALLOWED_CHAT_IDS_STR.split(","):
@@ -44,7 +43,11 @@ class WhiteListFilter(Filter):
     async def __call__(self, message: Message) -> bool:
         if not ALLOWED_CHAT_IDS:
             return True
-        return message.chat.id in ALLOWED_CHAT_IDS
+        if message.chat.id in ALLOWED_CHAT_IDS:
+            return True
+        if message.from_user and message.from_user.id in ALLOWED_CHAT_IDS:
+            return True
+        return False
 
 @dp.message(CommandStart(), WhiteListFilter())
 async def cmd_start(message: Message):
