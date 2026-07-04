@@ -158,27 +158,30 @@ async def handle_message(message: Message):
                         thumbnail_file = None
 
                 video_url = None
-                max_width = 0
                 
-                bit_rate_list = video_info.get("bit_rate", [])
-                for rate in bit_rate_list:
-                    play_addr = rate.get("play_addr", {})
-                    width = play_addr.get("width", 0)
-                    url_list = play_addr.get("url_list", [])
-                    
-                    if width > max_width and url_list:
-                        max_width = width
-                        video_url = url_list[0]
+                # 1. 优先获取稳妥且画质最好的推荐高清流
+                video_dict = root_data.get("video_data", {})
+                video_url = video_dict.get("nwm_video_url_HQ") or video_dict.get("nwm_video_url")
                 
+                # 2. 如果不存在推荐流，则作为备用逻辑，深入底层数组寻找最高码率源
+                if not video_url:
+                    max_bitrate = 0
+                    bit_rate_list = video_info.get("bit_rate", [])
+                    for rate in bit_rate_list:
+                        bitrate_val = rate.get("bit_rate", 0)
+                        play_addr = rate.get("play_addr", {})
+                        url_list = play_addr.get("url_list", [])
+                        
+                        if bitrate_val > max_bitrate and url_list:
+                            max_bitrate = bitrate_val
+                            video_url = url_list[0]
+                
+                # 3. 如果连最高码率都没找到，兜底拿到什么就用什么
                 if not video_url:
                     play_addr = video_info.get("play_addr", {})
                     url_list = play_addr.get("url_list", [])
                     if url_list:
                         video_url = url_list[0]
-                        
-                if not video_url:
-                    video_dict = root_data.get("video_data", {})
-                    video_url = video_dict.get("nwm_video_url_HQ") or video_dict.get("nwm_video_url")
                 
                 if video_url and "/playwm/" in video_url:
                      video_url = video_url.replace("/playwm/", "/play/")
@@ -335,27 +338,30 @@ async def handle_channel_post(message: Message):
                         thumbnail_file = None
 
                 video_url = None
-                max_width = 0
                 
-                bit_rate_list = video_info.get("bit_rate", [])
-                for rate in bit_rate_list:
-                    play_addr = rate.get("play_addr", {})
-                    width = play_addr.get("width", 0)
-                    url_list = play_addr.get("url_list", [])
-                    
-                    if width > max_width and url_list:
-                        max_width = width
-                        video_url = url_list[0]
+                # 1. 优先获取稳妥且画质最好的推荐高清流
+                video_dict = root_data.get("video_data", {})
+                video_url = video_dict.get("nwm_video_url_HQ") or video_dict.get("nwm_video_url")
                 
+                # 2. 如果不存在推荐流，则作为备用逻辑，深入底层数组寻找最高码率源
+                if not video_url:
+                    max_bitrate = 0
+                    bit_rate_list = video_info.get("bit_rate", [])
+                    for rate in bit_rate_list:
+                        bitrate_val = rate.get("bit_rate", 0)
+                        play_addr = rate.get("play_addr", {})
+                        url_list = play_addr.get("url_list", [])
+                        
+                        if bitrate_val > max_bitrate and url_list:
+                            max_bitrate = bitrate_val
+                            video_url = url_list[0]
+                
+                # 3. 如果连最高码率都没找到，兜底拿到什么就用什么
                 if not video_url:
                     play_addr = video_info.get("play_addr", {})
                     url_list = play_addr.get("url_list", [])
                     if url_list:
                         video_url = url_list[0]
-                        
-                if not video_url:
-                    video_dict = root_data.get("video_data", {})
-                    video_url = video_dict.get("nwm_video_url_HQ") or video_dict.get("nwm_video_url")
                 
                 if video_url and "/playwm/" in video_url:
                      video_url = video_url.replace("/playwm/", "/play/")
