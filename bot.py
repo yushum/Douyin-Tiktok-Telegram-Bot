@@ -39,6 +39,45 @@ else:
 dp = Dispatcher()
 URL_REGEX = re.compile(r"https?://[-A-Za-z0-9+&@#/%?=~_|!:,.;]+[-A-Za-z0-9+&@#/%=~_|]")
 
+def get_best_video_url(video_info, root_data=None):
+    """
+    通用寻源函数：双因子排序获取最高分辨率、最高码率的视频流，
+    适用于主视频及图集内的实况动图(Live Photo)
+    """
+    video_url = None
+    max_width = 0
+    max_bitrate = 0
+    
+    bit_rate_list = video_info.get("bit_rate", [])
+    for rate in bit_rate_list:
+        play_addr = rate.get("play_addr", {})
+        current_width = play_addr.get("width", 0)
+        current_bitrate = rate.get("bit_rate", 0)
+        url_list = play_addr.get("url_list", [])
+        
+        if not url_list:
+            continue
+
+        if current_width > max_width or (current_width == max_width and current_bitrate > max_bitrate):
+            max_width = current_width
+            max_bitrate = current_bitrate
+            video_url = url_list[0]
+            
+    if not video_url:
+        play_addr = video_info.get("play_addr", {})
+        url_list = play_addr.get("url_list", [])
+        if url_list:
+            video_url = url_list[0]
+            
+    if not video_url and root_data:
+        video_dict = root_data.get("video_data", {})
+        video_url = video_dict.get("nwm_video_url_HQ") or video_dict.get("nwm_video_url")
+        
+    if video_url and "/playwm/" in video_url:
+        video_url = video_url.replace("/playwm/", "/play/")
+        
+    return video_url
+
 class WhiteListFilter(Filter):
     async def __call__(self, message: Message) -> bool:
         if not ALLOWED_CHAT_IDS:
@@ -99,13 +138,30 @@ async def handle_message(message: Message):
                 if images:
                     media_assets = []
                     for img in images:
-                        img_url = img.get("url_list", [])[0] if img.get("url_list") else None
-                        if img_url:
-                            media_assets.append({"type": "photo", "url": img_url})
+                        # 核心新增：探测实况动图 (Live Photo)
+                        live_video = img.get("video", {})
+                        live_url = None
+                        if live_video:
+                            live_url = get_best_video_url(live_video)
+                            
+                        if live_url:
+                            v_width = live_video.get("play_addr", {}).get("width") or live_video.get("width")
+                            v_height = live_video.get("play_addr", {}).get("height") or live_video.get("height")
+                            media_assets.append({
+                                "type": "video", 
+                                "url": live_url,
+                                "width": v_width,
+                                "height": v_height
+                            })
+                        else:
+                            img_url = img.get("url_list", [])[0] if img.get("url_list") else None
+                            if img_url:
+                                media_assets.append({"type": "photo", "url": img_url})
 
                     if media_assets:
                         try:
-                            async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=30.0) as media_client:
+                            # 放宽时间至 60s，防实况视频过大导致超时
+                            async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=60.0) as media_client:
                                 for i in range(0, len(media_assets), 10):
                                     chunk = media_assets[i:i+10]
                                     media_group = MediaGroupBuilder(caption=caption if i == 0 else None)
@@ -116,16 +172,26 @@ async def handle_message(message: Message):
                                     buffer_list = []
                                     for idx, res in enumerate(responses):
                                         if isinstance(res, httpx.Response) and res.status_code == 200:
-                                            asset_type = chunk[idx]["type"]
+                                            asset = chunk[idx]
+                                            asset_type = asset["type"]
                                             ext = "webp" if asset_type == "photo" else "mp4"
-                                            buffer_list.append((res.content, f"media_{i}_{idx}.{ext}", asset_type))
+                                            buffer_list.append({
+                                                "bytes": res.content,
+                                                "filename": f"media_{i}_{idx}.{ext}",
+                                                "type": asset_type,
+                                                "width": asset.get("width"),
+                                                "height": asset.get("height")
+                                            })
                                             
-                                    for buf_bytes, filename, a_type in buffer_list:
-                                        file_obj = BufferedInputFile(buf_bytes, filename=filename)
-                                        if a_type == "photo":
+                                    for item in buffer_list:
+                                        file_obj = BufferedInputFile(item["bytes"], filename=item["filename"])
+                                        if item["type"] == "photo":
                                             media_group.add_photo(media=file_obj)
                                         else:
-                                            media_group.add_video(media=file_obj)
+                                            kwargs = {}
+                                            if item.get("width"): kwargs["width"] = int(item["width"])
+                                            if item.get("height"): kwargs["height"] = int(item["height"])
+                                            media_group.add_video(media=file_obj, **kwargs)
                                     
                                     if buffer_list:
                                         await bot.send_media_group(
@@ -142,7 +208,6 @@ async def handle_message(message: Message):
 
                 video_info = aweme_detail.get("video", {})
                 
-                # 提取视频原始分辨率参数给 Telegram 强制适配比例
                 play_addr_info = video_info.get("play_addr", {})
                 vid_width = play_addr_info.get("width") or video_info.get("width")
                 vid_height = play_addr_info.get("height") or video_info.get("height")
@@ -164,41 +229,8 @@ async def handle_message(message: Message):
                         print(f"Cover download skipped: {e}")
                         thumbnail_file = None
 
-                video_url = None
-                max_width = 0
-                max_bitrate = 0
-                
-                # 双因子排序：首选分辨率（width）最高的，同分辨率下选码率（bit_rate）最高的
-                bit_rate_list = video_info.get("bit_rate", [])
-                for rate in bit_rate_list:
-                    play_addr = rate.get("play_addr", {})
-                    current_width = play_addr.get("width", 0)
-                    current_bitrate = rate.get("bit_rate", 0)
-                    url_list = play_addr.get("url_list", [])
-                    
-                    if not url_list:
-                        continue
-
-                    # 判断逻辑：
-                    # 1. 如果分辨率更大，直接替换
-                    # 2. 如果分辨率相同，但码率更大，也替换
-                    if current_width > max_width or (current_width == max_width and current_bitrate > max_bitrate):
-                        max_width = current_width
-                        max_bitrate = current_bitrate
-                        video_url = url_list[0]
-                
-                if not video_url:
-                    play_addr = video_info.get("play_addr", {})
-                    url_list = play_addr.get("url_list", [])
-                    if url_list:
-                        video_url = url_list[0]
-                        
-                if not video_url:
-                    video_dict = root_data.get("video_data", {})
-                    video_url = video_dict.get("nwm_video_url_HQ") or video_dict.get("nwm_video_url")
-                
-                if video_url and "/playwm/" in video_url:
-                     video_url = video_url.replace("/playwm/", "/play/")
+                # 调用复用的最优寻源函数获取主视频链接
+                video_url = get_best_video_url(video_info, root_data)
                      
                 if video_url:
                     try:
@@ -208,8 +240,8 @@ async def handle_message(message: Message):
                             video=video_file,
                             caption=caption,
                             thumbnail=thumbnail_file,
-                            width=vid_width,      # 强制指定宽度
-                            height=vid_height,    # 强制指定高度
+                            width=vid_width,      
+                            height=vid_height,    
                             reply_to_message_id=message.message_id,
                             supports_streaming=True,
                             request_timeout=120
@@ -234,8 +266,8 @@ async def handle_message(message: Message):
                                 video=local_video_file,
                                 caption=caption,
                                 thumbnail=thumbnail_file,
-                                width=vid_width,      # 强制指定宽度
-                                height=vid_height,    # 强制指定高度
+                                width=vid_width,      
+                                height=vid_height,    
                                 reply_to_message_id=message.message_id,
                                 supports_streaming=True,
                                 request_timeout=300
@@ -299,13 +331,28 @@ async def handle_channel_post(message: Message):
                 if images:
                     media_assets = []
                     for img in images:
-                        img_url = img.get("url_list", [])[0] if img.get("url_list") else None
-                        if img_url:
-                            media_assets.append({"type": "photo", "url": img_url})
+                        live_video = img.get("video", {})
+                        live_url = None
+                        if live_video:
+                            live_url = get_best_video_url(live_video)
+                            
+                        if live_url:
+                            v_width = live_video.get("play_addr", {}).get("width") or live_video.get("width")
+                            v_height = live_video.get("play_addr", {}).get("height") or live_video.get("height")
+                            media_assets.append({
+                                "type": "video", 
+                                "url": live_url,
+                                "width": v_width,
+                                "height": v_height
+                            })
+                        else:
+                            img_url = img.get("url_list", [])[0] if img.get("url_list") else None
+                            if img_url:
+                                media_assets.append({"type": "photo", "url": img_url})
 
                     if media_assets:
                         try:
-                            async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=30.0) as media_client:
+                            async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=60.0) as media_client:
                                 for i in range(0, len(media_assets), 10):
                                     chunk = media_assets[i:i+10]
                                     media_group = MediaGroupBuilder(caption=caption if i == 0 else None)
@@ -316,16 +363,26 @@ async def handle_channel_post(message: Message):
                                     buffer_list = []
                                     for idx, res in enumerate(responses):
                                         if isinstance(res, httpx.Response) and res.status_code == 200:
-                                            asset_type = chunk[idx]["type"]
+                                            asset = chunk[idx]
+                                            asset_type = asset["type"]
                                             ext = "webp" if asset_type == "photo" else "mp4"
-                                            buffer_list.append((res.content, f"media_{i}_{idx}.{ext}", asset_type))
+                                            buffer_list.append({
+                                                "bytes": res.content,
+                                                "filename": f"media_{i}_{idx}.{ext}",
+                                                "type": asset_type,
+                                                "width": asset.get("width"),
+                                                "height": asset.get("height")
+                                            })
                                             
-                                    for buf_bytes, filename, a_type in buffer_list:
-                                        file_obj = BufferedInputFile(buf_bytes, filename=filename)
-                                        if a_type == "photo":
+                                    for item in buffer_list:
+                                        file_obj = BufferedInputFile(item["bytes"], filename=item["filename"])
+                                        if item["type"] == "photo":
                                             media_group.add_photo(media=file_obj)
                                         else:
-                                            media_group.add_video(media=file_obj)
+                                            kwargs = {}
+                                            if item.get("width"): kwargs["width"] = int(item["width"])
+                                            if item.get("height"): kwargs["height"] = int(item["height"])
+                                            media_group.add_video(media=file_obj, **kwargs)
                                     
                                     if buffer_list:
                                         await bot.send_media_group(
@@ -340,7 +397,6 @@ async def handle_channel_post(message: Message):
 
                 video_info = aweme_detail.get("video", {})
                 
-                # 提取视频原始分辨率参数给 Telegram 强制适配比例
                 play_addr_info = video_info.get("play_addr", {})
                 vid_width = play_addr_info.get("width") or video_info.get("width")
                 vid_height = play_addr_info.get("height") or video_info.get("height")
@@ -362,41 +418,7 @@ async def handle_channel_post(message: Message):
                         print(f"Cover download skipped: {e}")
                         thumbnail_file = None
 
-                video_url = None
-                max_width = 0
-                max_bitrate = 0
-                
-                # 双因子排序：首选分辨率（width）最高的，同分辨率下选码率（bit_rate）最高的
-                bit_rate_list = video_info.get("bit_rate", [])
-                for rate in bit_rate_list:
-                    play_addr = rate.get("play_addr", {})
-                    current_width = play_addr.get("width", 0)
-                    current_bitrate = rate.get("bit_rate", 0)
-                    url_list = play_addr.get("url_list", [])
-                    
-                    if not url_list:
-                        continue
-
-                    # 判断逻辑：
-                    # 1. 如果分辨率更大，直接替换
-                    # 2. 如果分辨率相同，但码率更大，也替换
-                    if current_width > max_width or (current_width == max_width and current_bitrate > max_bitrate):
-                        max_width = current_width
-                        max_bitrate = current_bitrate
-                        video_url = url_list[0]
-                
-                if not video_url:
-                    play_addr = video_info.get("play_addr", {})
-                    url_list = play_addr.get("url_list", [])
-                    if url_list:
-                        video_url = url_list[0]
-                        
-                if not video_url:
-                    video_dict = root_data.get("video_data", {})
-                    video_url = video_dict.get("nwm_video_url_HQ") or video_dict.get("nwm_video_url")
-                
-                if video_url and "/playwm/" in video_url:
-                     video_url = video_url.replace("/playwm/", "/play/")
+                video_url = get_best_video_url(video_info, root_data)
                      
                 if video_url:
                     try:
@@ -406,8 +428,8 @@ async def handle_channel_post(message: Message):
                             video=video_file,
                             caption=caption,
                             thumbnail=thumbnail_file,
-                            width=vid_width,      # 强制指定宽度
-                            height=vid_height,    # 强制指定高度
+                            width=vid_width,      
+                            height=vid_height,    
                             supports_streaming=True,
                             request_timeout=120
                         )
@@ -431,8 +453,8 @@ async def handle_channel_post(message: Message):
                                 video=local_video_file,
                                 caption=caption,
                                 thumbnail=thumbnail_file,
-                                width=vid_width,      # 强制指定宽度
-                                height=vid_height,    # 强制指定高度
+                                width=vid_width,      
+                                height=vid_height,    
                                 supports_streaming=True,
                                 request_timeout=300
                             )
