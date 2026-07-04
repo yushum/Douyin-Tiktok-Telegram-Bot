@@ -5,7 +5,7 @@ import httpx
 import asyncio
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, URLInputFile, FSInputFile, BufferedInputFile
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, Filter
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -16,6 +16,18 @@ from aiogram.utils.media_group import MediaGroupBuilder
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://douyin.wtf")
 LOCAL_API_SERVER = os.environ.get("LOCAL_API_SERVER")
+ALLOWED_CHAT_IDS_STR = os.environ.get("ALLOWED_CHAT_IDS", "")
+
+# 解析白名单 ID
+ALLOWED_CHAT_IDS = []
+if ALLOWED_CHAT_IDS_STR:
+    for x in ALLOWED_CHAT_IDS_STR.split(","):
+        x = x.strip()
+        if x:
+            try:
+                ALLOWED_CHAT_IDS.append(int(x))
+            except ValueError:
+                pass
 
 if LOCAL_API_SERVER:
     session = AiohttpSession(
@@ -26,18 +38,23 @@ else:
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
 dp = Dispatcher()
-
 URL_REGEX = re.compile(r"https?://[-A-Za-z0-9+&@#/%?=~_|!:,.;]+[-A-Za-z0-9+&@#/%=~_|]")
 
-@dp.message(CommandStart())
+class WhiteListFilter(Filter):
+    async def __call__(self, message: Message) -> bool:
+        if not ALLOWED_CHAT_IDS:
+            return True
+        return message.chat.id in ALLOWED_CHAT_IDS
+
+@dp.message(CommandStart(), WhiteListFilter())
 async def cmd_start(message: Message):
     await message.reply("发送带有抖音/TikTok分享链接的消息给我，我会为你提取无水印视频或图集。")
 
-@dp.message(Command("help"))
+@dp.message(Command("help"), WhiteListFilter())
 async def cmd_help(message: Message):
     await message.reply("直接向我发送包含抖音或TikTok分享链接的消息即可，支持视频和图集解析。")
 
-@dp.message(F.text)
+@dp.message(F.text, WhiteListFilter())
 async def handle_message(message: Message):
     urls = URL_REGEX.findall(message.text)
     if not urls:
@@ -218,21 +235,17 @@ async def handle_message(message: Message):
             print(f"Error occurred: {str(e)}")
             await reply_msg.edit_text("解析失败")
 
-@dp.channel_post(F.text)
+@dp.channel_post(F.text, WhiteListFilter())
 async def handle_channel_post(message: Message):
     urls = URL_REGEX.findall(message.text)
     if not urls:
         return
         
-    # 在频道中也只响应带有特定域名的链接
     if not any(domain in urls[0].lower() for domain in ["douyin", "tiktok", "snssdk"]):
         return
 
     target_url = urls[0]
     
-    # 频道中不发“正在处理”，因为频繁发/删消息在频道里体验不好，且可能触发限流
-    # 我们直接静默下载，下完直接替换掉原来的那条包含链接的消息
-
     api_endpoint = f"{API_BASE_URL}/api/hybrid/video_data"
     
     async with httpx.AsyncClient(timeout=60.0) as client:
@@ -258,9 +271,6 @@ async def handle_channel_post(message: Message):
                 else:
                     caption = f"<b>{nickname}</b>\n{desc}"
 
-                # ==========================
-                # 频道 - 图集解析处理
-                # ==========================
                 images = aweme_detail.get("images", [])
                 if images:
                     media_assets = []
@@ -299,15 +309,11 @@ async def handle_channel_post(message: Message):
                                             media=media_group.build(),
                                             request_timeout=60
                                         )
-                            # 发送成功后，删除原帖
                             await message.delete()
                         except Exception as sub_e:
                             print(f"Channel MediaGroup send error: {sub_e}")
                         return
 
-                # ==========================
-                # 频道 - 视频解析处理
-                # ==========================
                 video_info = aweme_detail.get("video", {})
                 
                 cover_url = None
@@ -362,7 +368,6 @@ async def handle_channel_post(message: Message):
                             supports_streaming=True,
                             request_timeout=120
                         )
-                        # 发送成功后删除带有链接的原帖
                         await message.delete()
                         
                     except (TelegramEntityTooLarge, TelegramBadRequest, asyncio.TimeoutError) as e:
@@ -386,7 +391,6 @@ async def handle_channel_post(message: Message):
                                 supports_streaming=True,
                                 request_timeout=300
                             )
-                            # 发送成功后删除带有链接的原帖
                             await message.delete()
                             
                             if os.path.exists(temp_filepath):

@@ -15,7 +15,7 @@
 - **2GB 大文件突破**：基于双容器共享数据卷架构打通 Telegram Local API Server，彻底告别官方 50MB 传输限制，最高支持 2GB 的长视频（如电影解说）极速直传。
 - **防盗链穿透**：通过内存缓冲与伪装请求，有效绕过抖音图集和视频封面的 `403 Forbidden` 严格防盗链机制。
 - **全场景适配**：私聊即时响应；支持频道 (Channel) 静默发布与带链接原帖自动清理；群组模式下智能嗅探短链接，实现纯净防打扰。
-- **秒级流播**：发出的视频原生支持边下边播，且附带提取到的高清封面图。
+- **安全防滥用**：内置轻量级白名单机制，支持配置允许交互的用户或群组，未授权访问将直接被忽略。
 
 ## 📦 快速部署
 
@@ -33,6 +33,9 @@ BOT_TOKEN=123456789:ABCdefGHIjklmNOPQrstUVwxyZ
 
 # 默认使用开源演示节点，为保证稳定性，强烈建议自行部署该 API
 API_BASE_URL=https://douyin.wtf
+
+# (可选) 白名单隔离：仅允许特定的 User ID 或 Chat ID 使用。多个 ID 用逗号分隔。不填则表示全员公开。
+ALLOWED_CHAT_IDS=123456789,-100987654321
 ```
 
 ### 2. 一键启动
@@ -42,6 +45,7 @@ API_BASE_URL=https://douyin.wtf
 ```bash
 docker compose up -d
 ```
+*(默认拉取 latest 标签，始终保持最新。如需锁定版本，可在 compose.yaml 中将 image 修改为特定版本号，例如 yushum/douyin-tiktok-telegram-bot:1.0.0)*
 
 启动后，直接向你的 Bot 发送一段抖音分享口令即可体验！
 
