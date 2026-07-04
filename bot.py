@@ -142,6 +142,13 @@ async def handle_message(message: Message):
 
                 video_info = aweme_detail.get("video", {})
                 
+                # 提取视频原始分辨率参数给 Telegram 强制适配比例
+                play_addr_info = video_info.get("play_addr", {})
+                vid_width = play_addr_info.get("width") or video_info.get("width")
+                vid_height = play_addr_info.get("height") or video_info.get("height")
+                if vid_width: vid_width = int(vid_width)
+                if vid_height: vid_height = int(vid_height)
+                
                 cover_url = None
                 cover_dict = video_info.get("origin_cover", {}) or video_info.get("cover", {})
                 if cover_dict.get("url_list"):
@@ -194,6 +201,8 @@ async def handle_message(message: Message):
                             video=video_file,
                             caption=caption,
                             thumbnail=thumbnail_file,
+                            width=vid_width,      # 强制指定宽度
+                            height=vid_height,    # 强制指定高度
                             reply_to_message_id=message.message_id,
                             supports_streaming=True,
                             request_timeout=120
@@ -218,6 +227,8 @@ async def handle_message(message: Message):
                                 video=local_video_file,
                                 caption=caption,
                                 thumbnail=thumbnail_file,
+                                width=vid_width,      # 强制指定宽度
+                                height=vid_height,    # 强制指定高度
                                 reply_to_message_id=message.message_id,
                                 supports_streaming=True,
                                 request_timeout=300
@@ -322,6 +333,13 @@ async def handle_channel_post(message: Message):
 
                 video_info = aweme_detail.get("video", {})
                 
+                # 提取视频原始分辨率参数给 Telegram 强制适配比例
+                play_addr_info = video_info.get("play_addr", {})
+                vid_width = play_addr_info.get("width") or video_info.get("width")
+                vid_height = play_addr_info.get("height") or video_info.get("height")
+                if vid_width: vid_width = int(vid_width)
+                if vid_height: vid_height = int(vid_height)
+                
                 cover_url = None
                 cover_dict = video_info.get("origin_cover", {}) or video_info.get("cover", {})
                 if cover_dict.get("url_list"):
@@ -374,6 +392,8 @@ async def handle_channel_post(message: Message):
                             video=video_file,
                             caption=caption,
                             thumbnail=thumbnail_file,
+                            width=vid_width,      # 强制指定宽度
+                            height=vid_height,    # 强制指定高度
                             supports_streaming=True,
                             request_timeout=120
                         )
@@ -397,6 +417,8 @@ async def handle_channel_post(message: Message):
                                 video=local_video_file,
                                 caption=caption,
                                 thumbnail=thumbnail_file,
+                                width=vid_width,      # 强制指定宽度
+                                height=vid_height,    # 强制指定高度
                                 supports_streaming=True,
                                 request_timeout=300
                             )
