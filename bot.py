@@ -37,10 +37,6 @@ async def cmd_start(message: Message):
 async def cmd_help(message: Message):
     await message.reply("直接向我发送包含抖音或TikTok分享链接的消息即可，支持视频和图集解析。")
 
-# 移除对 channel 的支持，因为频道里的消息没有 message_id，无法用 reply() 回复，需要重写大量逻辑
-# 但实际上，在 channel 里，机器人是作为一个发布者存在的，而不是一个交互对象。
-# 这意味着你发链接，它解析，然后作为频道消息发出。
-
 @dp.message(F.text)
 async def handle_message(message: Message):
     urls = URL_REGEX.findall(message.text)
@@ -222,7 +218,6 @@ async def handle_message(message: Message):
             print(f"Error occurred: {str(e)}")
             await reply_msg.edit_text("解析失败")
 
-# --- 新增：频道消息处理器 ---
 @dp.channel_post(F.text)
 async def handle_channel_post(message: Message):
     urls = URL_REGEX.findall(message.text)

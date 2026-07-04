@@ -3,12 +3,11 @@ name: Build and Push Docker Image
 on:
   push:
     branches:
-      - master  # 如果你的默认分支是 master，请将这里改为 master
+      - master
     paths:
       - 'bot.py'
       - 'Dockerfile'
       - 'requirements.txt'
-      # 只有当这三个核心文件发生变动时，才会触发自动构建
 
 jobs:
   build:
