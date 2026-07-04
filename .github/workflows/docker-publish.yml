@@ -8,6 +8,7 @@ on:
       - 'bot.py'
       - 'Dockerfile'
       - 'requirements.txt'
+  workflow_dispatch:
 
 jobs:
   build:
