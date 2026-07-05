@@ -121,7 +121,9 @@ async def handle_message(message: Message):
 
             if data.get("code") == 200:
                 root_data = data.get("data", {})
-                aweme_detail = root_data.get("aweme_detail", root_data)
+                
+                # IMPORTANT FIX: 处理有些API版本直接把核心数据放在外层而没有 aweme_detail 包装的情况
+                aweme_detail = root_data.get("aweme_detail") if "aweme_detail" in root_data else root_data
                 
                 author_info = aweme_detail.get("author", {})
                 nickname = author_info.get("nickname", "未知作者")
@@ -314,7 +316,9 @@ async def handle_channel_post(message: Message):
 
             if data.get("code") == 200:
                 root_data = data.get("data", {})
-                aweme_detail = root_data.get("aweme_detail", root_data)
+                
+                # IMPORTANT FIX: 处理有些API版本直接把核心数据放在外层而没有 aweme_detail 包装的情况
+                aweme_detail = root_data.get("aweme_detail") if "aweme_detail" in root_data else root_data
                 
                 author_info = aweme_detail.get("author", {})
                 nickname = author_info.get("nickname", "未知作者")
