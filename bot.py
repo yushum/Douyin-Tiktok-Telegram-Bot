@@ -121,8 +121,6 @@ async def handle_message(message: Message):
 
             if data.get("code") == 200:
                 root_data = data.get("data", {})
-                
-                # IMPORTANT FIX: 处理有些API版本直接把核心数据放在外层而没有 aweme_detail 包装的情况
                 aweme_detail = root_data.get("aweme_detail") if "aweme_detail" in root_data else root_data
                 
                 author_info = aweme_detail.get("author", {})
@@ -140,7 +138,6 @@ async def handle_message(message: Message):
                 if images:
                     media_assets = []
                     for img in images:
-                        # 核心新增：探测实况动图 (Live Photo)
                         live_video = img.get("video", {})
                         live_url = None
                         if live_video:
@@ -162,7 +159,6 @@ async def handle_message(message: Message):
 
                     if media_assets:
                         try:
-                            # 放宽时间至 60s，防实况视频过大导致超时
                             async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=60.0) as media_client:
                                 for i in range(0, len(media_assets), 10):
                                     chunk = media_assets[i:i+10]
@@ -231,11 +227,22 @@ async def handle_message(message: Message):
                         print(f"Cover download skipped: {e}")
                         thumbnail_file = None
 
-                # 调用复用的最优寻源函数获取主视频链接
                 video_url = get_best_video_url(video_info, root_data)
                      
                 if video_url:
+                    # 获取文件大小以便智能回退
                     try:
+                        head_r = await client.head(video_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
+                        content_length = int(head_r.headers.get("content-length", 0))
+                    except:
+                        content_length = 0
+
+                    try:
+                        # Telegram API 限制直传 URL 最大 20MB。
+                        # 对于超大文件(此处设为大于18MB，留点冗余) 或 本地Bot API，优先考虑下载。
+                        if content_length > 18 * 1024 * 1024:
+                            raise TelegramEntityTooLarge("File size likely exceeds Telegram URL upload limit")
+                            
                         video_file = URLInputFile(video_url)
                         await bot.send_video(
                             chat_id=message.chat.id,
@@ -250,19 +257,22 @@ async def handle_message(message: Message):
                         )
                         await reply_msg.delete()
                         
-                    except (TelegramEntityTooLarge, TelegramBadRequest, asyncio.TimeoutError) as e:
+                    except (TelegramEntityTooLarge, TelegramBadRequest, asyncio.TimeoutError, Exception) as e:
+                        # 进入大文件下载兜底
                         try:
                             temp_filename = f"video_{message.message_id}.mp4"
                             temp_filepath = os.path.join("/var/lib/telegram-bot-api", temp_filename)
                             
-                            async with client.stream("GET", video_url, timeout=300.0) as video_response:
+                            # 增加大文件下载超时至600秒，并添加流式下载错误处理
+                            async with client.stream("GET", video_url, timeout=600.0) as video_response:
                                 video_response.raise_for_status()
                                 with open(temp_filepath, "wb") as f:
-                                    async for chunk in video_response.aiter_bytes():
+                                    async for chunk in video_response.aiter_bytes(chunk_size=1024*1024):
                                         f.write(chunk)
                             
                             local_video_file = FSInputFile(temp_filepath)
                             
+                            # 发送本地文件，超时延长至600秒
                             await bot.send_video(
                                 chat_id=message.chat.id,
                                 video=local_video_file,
@@ -272,7 +282,7 @@ async def handle_message(message: Message):
                                 height=vid_height,    
                                 reply_to_message_id=message.message_id,
                                 supports_streaming=True,
-                                request_timeout=300
+                                request_timeout=600
                             )
                             await reply_msg.delete()
                             
@@ -281,13 +291,13 @@ async def handle_message(message: Message):
                                 
                         except Exception as sub_e:
                             print(f"Fallback download error: {str(sub_e)}")
-                            await reply_msg.edit_text("解析失败")
+                            await reply_msg.edit_text("解析失败: 视频过大或下载超时")
                             if 'temp_filepath' in locals() and os.path.exists(temp_filepath):
                                 os.remove(temp_filepath)
                 else:
-                    await reply_msg.edit_text("解析失败")
+                    await reply_msg.edit_text("解析失败: 未找到有效视频源")
             else:
-                await reply_msg.edit_text("解析失败")
+                await reply_msg.edit_text("解析失败: API 响应异常")
 
         except Exception as e:
             print(f"Error occurred: {str(e)}")
@@ -316,8 +326,6 @@ async def handle_channel_post(message: Message):
 
             if data.get("code") == 200:
                 root_data = data.get("data", {})
-                
-                # IMPORTANT FIX: 处理有些API版本直接把核心数据放在外层而没有 aweme_detail 包装的情况
                 aweme_detail = root_data.get("aweme_detail") if "aweme_detail" in root_data else root_data
                 
                 author_info = aweme_detail.get("author", {})
@@ -426,6 +434,15 @@ async def handle_channel_post(message: Message):
                      
                 if video_url:
                     try:
+                        head_r = await client.head(video_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
+                        content_length = int(head_r.headers.get("content-length", 0))
+                    except:
+                        content_length = 0
+                        
+                    try:
+                        if content_length > 18 * 1024 * 1024:
+                            raise TelegramEntityTooLarge("File size likely exceeds Telegram URL upload limit")
+                            
                         video_file = URLInputFile(video_url)
                         await bot.send_video(
                             chat_id=message.chat.id,
@@ -439,15 +456,15 @@ async def handle_channel_post(message: Message):
                         )
                         await message.delete()
                         
-                    except (TelegramEntityTooLarge, TelegramBadRequest, asyncio.TimeoutError) as e:
+                    except (TelegramEntityTooLarge, TelegramBadRequest, asyncio.TimeoutError, Exception) as e:
                         try:
-                            temp_filename = f"video_{message.message_id}.mp4"
+                            temp_filename = f"message_{message.message_id}.mp4"
                             temp_filepath = os.path.join("/var/lib/telegram-bot-api", temp_filename)
                             
-                            async with client.stream("GET", video_url, timeout=300.0) as video_response:
+                            async with client.stream("GET", video_url, timeout=600.0) as video_response:
                                 video_response.raise_for_status()
                                 with open(temp_filepath, "wb") as f:
-                                    async for chunk in video_response.aiter_bytes():
+                                    async for chunk in video_response.aiter_bytes(chunk_size=1024*1024):
                                         f.write(chunk)
                             
                             local_video_file = FSInputFile(temp_filepath)
@@ -460,7 +477,7 @@ async def handle_channel_post(message: Message):
                                 width=vid_width,      
                                 height=vid_height,    
                                 supports_streaming=True,
-                                request_timeout=300
+                                request_timeout=600
                             )
                             await message.delete()
                             
