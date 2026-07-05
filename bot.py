@@ -1,6 +1,7 @@
 import os
 import re
 import io
+import html
 import httpx
 import asyncio
 from aiogram import Bot, Dispatcher, F
@@ -40,10 +41,6 @@ dp = Dispatcher()
 URL_REGEX = re.compile(r"https?://[-A-Za-z0-9+&@#/%?=~_|!:,.;]+[-A-Za-z0-9+&@#/%=~_|]")
 
 def get_best_video_url(video_info, root_data=None):
-    """
-    通用寻源函数：双因子排序获取最高分辨率、最高码率的视频流，
-    适用于主视频及图集内的实况动图(Live Photo)
-    """
     video_url = None
     max_width = 0
     max_bitrate = 0
@@ -126,13 +123,17 @@ async def handle_message(message: Message):
                 author_info = aweme_detail.get("author", {})
                 nickname = author_info.get("nickname", "未知作者")
                 sec_uid = author_info.get("sec_uid", "")
-                desc = aweme_detail.get("desc", "无描述")
+                
+                # HTML Escape for desc and nickname to prevent Telegram Parse Error
+                raw_desc = aweme_detail.get("desc", "无描述")
+                safe_desc = html.escape(raw_desc)
+                safe_nickname = html.escape(nickname)
                 
                 if sec_uid:
                     author_url = f"https://www.douyin.com/user/{sec_uid}"
-                    caption = f"<a href='{author_url}'>{nickname}</a>\n{desc}"
+                    caption = f"<a href='{author_url}'>{safe_nickname}</a>\n{safe_desc}"
                 else:
-                    caption = f"<b>{nickname}</b>\n{desc}"
+                    caption = f"<b>{safe_nickname}</b>\n{safe_desc}"
 
                 images = aweme_detail.get("images", [])
                 if images:
@@ -230,16 +231,13 @@ async def handle_message(message: Message):
                 video_url = get_best_video_url(video_info, root_data)
                      
                 if video_url:
-                    # 获取文件大小以便智能回退
                     try:
                         head_r = await client.head(video_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
                         content_length = int(head_r.headers.get("content-length", 0))
                     except:
                         content_length = 0
-
+                        
                     try:
-                        # Telegram API 限制直传 URL 最大 20MB。
-                        # 对于超大文件(此处设为大于18MB，留点冗余) 或 本地Bot API，优先考虑下载。
                         if content_length > 18 * 1024 * 1024:
                             raise TelegramEntityTooLarge("File size likely exceeds Telegram URL upload limit")
                             
@@ -258,12 +256,10 @@ async def handle_message(message: Message):
                         await reply_msg.delete()
                         
                     except (TelegramEntityTooLarge, TelegramBadRequest, asyncio.TimeoutError, Exception) as e:
-                        # 进入大文件下载兜底
                         try:
                             temp_filename = f"video_{message.message_id}.mp4"
                             temp_filepath = os.path.join("/var/lib/telegram-bot-api", temp_filename)
                             
-                            # 增加大文件下载超时至600秒，并添加流式下载错误处理
                             async with client.stream("GET", video_url, timeout=600.0) as video_response:
                                 video_response.raise_for_status()
                                 with open(temp_filepath, "wb") as f:
@@ -272,7 +268,6 @@ async def handle_message(message: Message):
                             
                             local_video_file = FSInputFile(temp_filepath)
                             
-                            # 发送本地文件，超时延长至600秒
                             await bot.send_video(
                                 chat_id=message.chat.id,
                                 video=local_video_file,
@@ -331,13 +326,17 @@ async def handle_channel_post(message: Message):
                 author_info = aweme_detail.get("author", {})
                 nickname = author_info.get("nickname", "未知作者")
                 sec_uid = author_info.get("sec_uid", "")
-                desc = aweme_detail.get("desc", "无描述")
+                
+                # HTML Escape for desc and nickname
+                raw_desc = aweme_detail.get("desc", "无描述")
+                safe_desc = html.escape(raw_desc)
+                safe_nickname = html.escape(nickname)
                 
                 if sec_uid:
                     author_url = f"https://www.douyin.com/user/{sec_uid}"
-                    caption = f"<a href='{author_url}'>{nickname}</a>\n{desc}"
+                    caption = f"<a href='{author_url}'>{safe_nickname}</a>\n{safe_desc}"
                 else:
-                    caption = f"<b>{nickname}</b>\n{desc}"
+                    caption = f"<b>{safe_nickname}</b>\n{safe_desc}"
 
                 images = aweme_detail.get("images", [])
                 if images:
