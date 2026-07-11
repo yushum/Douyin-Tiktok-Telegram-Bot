@@ -9,6 +9,6 @@ RUN pip install --upgrade pip && \
 # 强制禁用 Python 的标准输出缓冲，实时打印日志
 ENV PYTHONUNBUFFERED=1
 
-COPY bot.py .
+COPY *.py .
 
 CMD ["python", "bot.py"]
