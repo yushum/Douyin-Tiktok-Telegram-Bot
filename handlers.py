@@ -430,3 +430,7 @@ async def handle_channel_post(message: Message, bot: Bot):
         await message.delete()
     except Exception:
         pass
+
+@router.message()
+async def debug_catch_all(message: Message):
+    logger.info(f"拦截到未处理消息 (可能因白名单或非文本): Chat_ID={message.chat.id}, User_ID={message.from_user.id if message.from_user else 'Unknown'}, Type={message.content_type}")
