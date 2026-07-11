@@ -94,8 +94,9 @@ async def process_with_parsehub_fallback(target_url: str, message: Message, repl
         ph = ParseHub()
         result = await ph.parse(target_url, cookie=DOUYIN_COOKIE)
         
+        video_link = getattr(result, "url", target_url) or target_url
         safe_desc = html.escape(result.title or "")
-        caption = f"<a href='{target_url}'>{safe_desc}</a>" if safe_desc else f"<a href='{target_url}'>视频链接</a>"
+        caption = f"<a href='{video_link}'>{safe_desc}</a>" if safe_desc else f"<a href='{video_link}'>视频链接</a>"
         
         media_list = []
         if isinstance(result.media, Sequence):
@@ -286,7 +287,18 @@ async def handle_message(message: Message):
                 raw_desc = aweme_detail.get("desc", "")
                 safe_desc = html.escape(raw_desc)
                 
-                caption = f"<a href='{target_url}'>{safe_desc}</a>" if safe_desc else f"<a href='{target_url}'>视频链接</a>"
+                aweme_id = aweme_detail.get("aweme_id")
+                if aweme_id:
+                    if "tiktok" in target_url.lower():
+                        author_info = aweme_detail.get("author", {})
+                        unique_id = author_info.get("unique_id") or author_info.get("short_id") or "user"
+                        video_link = f"https://www.tiktok.com/@{unique_id}/video/{aweme_id}"
+                    else:
+                        video_link = f"https://www.douyin.com/video/{aweme_id}"
+                else:
+                    video_link = target_url
+                
+                caption = f"<a href='{video_link}'>{safe_desc}</a>" if safe_desc else f"<a href='{video_link}'>视频链接</a>"
 
                 images = aweme_detail.get("images", [])
                 if images:
@@ -480,7 +492,18 @@ async def handle_channel_post(message: Message):
                 raw_desc = aweme_detail.get("desc", "")
                 safe_desc = html.escape(raw_desc)
                 
-                caption = f"<a href='{target_url}'>{safe_desc}</a>" if safe_desc else f"<a href='{target_url}'>视频链接</a>"
+                aweme_id = aweme_detail.get("aweme_id")
+                if aweme_id:
+                    if "tiktok" in target_url.lower():
+                        author_info = aweme_detail.get("author", {})
+                        unique_id = author_info.get("unique_id") or author_info.get("short_id") or "user"
+                        video_link = f"https://www.tiktok.com/@{unique_id}/video/{aweme_id}"
+                    else:
+                        video_link = f"https://www.douyin.com/video/{aweme_id}"
+                else:
+                    video_link = target_url
+                
+                caption = f"<a href='{video_link}'>{safe_desc}</a>" if safe_desc else f"<a href='{video_link}'>视频链接</a>"
 
                 images = aweme_detail.get("images", [])
                 if images:
