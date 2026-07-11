@@ -2,6 +2,8 @@ import os
 import html
 import httpx
 import asyncio
+import uuid
+import aiofiles
 from aiogram import Bot
 from aiogram.types import Message, URLInputFile, FSInputFile, BufferedInputFile
 from aiogram.exceptions import TelegramEntityTooLarge, TelegramBadRequest
@@ -11,6 +13,14 @@ from parsehub.types.media_ref import VideoRef, ImageRef, LivePhotoRef, AniRef
 from collections.abc import Sequence
 
 from config import DOUYIN_COOKIE, logger
+
+_shared_client = None
+
+def get_shared_client() -> httpx.AsyncClient:
+    global _shared_client
+    if _shared_client is None:
+        _shared_client = httpx.AsyncClient(timeout=60.0)
+    return _shared_client
 
 def get_best_video_url(video_info, root_data=None):
     video_url = None
@@ -78,13 +88,13 @@ async def process_with_parsehub_fallback(target_url: str, message: Message, bot:
                     
             if media_assets:
                 try:
-                    async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=60.0) as media_client:
-                        for i in range(0, len(media_assets), 10):
-                            chunk = media_assets[i:i+10]
-                            media_group = MediaGroupBuilder(caption=caption if i == 0 else None)
-                            
-                            download_tasks = [media_client.get(asset["url"]) for asset in chunk]
-                            responses = await asyncio.gather(*download_tasks, return_exceptions=True)
+                    media_client = get_shared_client()
+                    for i in range(0, len(media_assets), 10):
+                        chunk = media_assets[i:i+10]
+                        media_group = MediaGroupBuilder(caption=caption if i == 0 else None)
+                        
+                        download_tasks = [media_client.get(asset["url"], headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}) for asset in chunk]
+                        responses = await asyncio.gather(*download_tasks, return_exceptions=True)
                             
                             buffer_list = []
                             for idx, res in enumerate(responses):
@@ -132,16 +142,16 @@ async def process_with_parsehub_fallback(target_url: str, message: Message, bot:
             thumbnail_file = None
             if getattr(v_ref, 'thumb_url', None):
                 try:
-                    async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0) as cover_client:
-                        cover_resp = await cover_client.get(v_ref.thumb_url)
-                        if cover_resp.status_code == 200:
-                            thumbnail_file = BufferedInputFile(cover_resp.content, filename="cover.jpeg")
+                    cover_client = get_shared_client()
+                    cover_resp = await cover_client.get(v_ref.thumb_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
+                    if cover_resp.status_code == 200:
+                        thumbnail_file = BufferedInputFile(cover_resp.content, filename="cover.jpeg")
                 except:
                     pass
                     
             try:
-                async with httpx.AsyncClient(timeout=10.0) as head_client:
-                    head_r = await head_client.head(video_url, headers={"User-Agent": "Mozilla/5.0"})
+                head_client = get_shared_client()
+                head_r = await head_client.head(video_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
                 content_length = int(head_r.headers.get("content-length", 0))
             except:
                 content_length = 0
@@ -166,16 +176,16 @@ async def process_with_parsehub_fallback(target_url: str, message: Message, bot:
                 elif not reply_msg: await message.delete()
                 
             except (TelegramEntityTooLarge, TelegramBadRequest, asyncio.TimeoutError, Exception) as e:
+                temp_filename = f"video_ph_{message.chat.id}_{message.message_id}_{uuid.uuid4().hex[:6]}.mp4"
+                temp_filepath = os.path.join("/var/lib/telegram-bot-api", temp_filename)
+                
                 try:
-                    temp_filename = f"video_ph_{message.message_id}.mp4"
-                    temp_filepath = os.path.join("/var/lib/telegram-bot-api", temp_filename)
-                    
-                    async with httpx.AsyncClient(timeout=600.0) as dl_client:
-                        async with dl_client.stream("GET", video_url) as video_response:
-                            video_response.raise_for_status()
-                            with open(temp_filepath, "wb") as f:
-                                async for chunk in video_response.aiter_bytes(chunk_size=1024*1024):
-                                    f.write(chunk)
+                    dl_client = get_shared_client()
+                    async with dl_client.stream("GET", video_url, timeout=600.0) as video_response:
+                        video_response.raise_for_status()
+                        async with aiofiles.open(temp_filepath, "wb") as f:
+                            async for chunk in video_response.aiter_bytes(chunk_size=1024*1024):
+                                await f.write(chunk)
                     
                     local_video_file = FSInputFile(temp_filepath)
                     
@@ -192,16 +202,14 @@ async def process_with_parsehub_fallback(target_url: str, message: Message, bot:
                     )
                     if reply_msg: await reply_msg.delete()
                     elif not reply_msg: await message.delete()
-                    
+                        
+                except Exception as sub_e:
+                    logger.error(f"Fallback download error (ParseHub)", exc_info=True)
+                    if reply_msg: await reply_msg.edit_text("解析失败: 视频过大或下载超时 (ParseHub)")
+                finally:
                     if os.path.exists(temp_filepath):
                         os.remove(temp_filepath)
                         
-                except Exception as sub_e:
-                    logger.error(f"Fallback download error (ParseHub): {str(sub_e)}")
-                    if reply_msg: await reply_msg.edit_text("解析失败: 视频过大或下载超时 (ParseHub)")
-                    if 'temp_filepath' in locals() and os.path.exists(temp_filepath):
-                        os.remove(temp_filepath)
-                        
     except Exception as ph_e:
-        logger.error(f"ParseHub Error: {str(ph_e)}")
+        logger.error(f"ParseHub Error", exc_info=True)
         if reply_msg: await reply_msg.edit_text("所有解析方式均失败")

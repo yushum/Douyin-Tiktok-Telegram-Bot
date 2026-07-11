@@ -1,8 +1,10 @@
 import os
 import re
 import html
+import uuid
 import httpx
 import asyncio
+import aiofiles
 from aiogram import Router, F, Bot
 from aiogram.types import Message, URLInputFile, FSInputFile, BufferedInputFile
 from aiogram.filters import CommandStart, Command, Filter
@@ -10,7 +12,7 @@ from aiogram.exceptions import TelegramEntityTooLarge, TelegramBadRequest
 from aiogram.utils.media_group import MediaGroupBuilder
 
 from config import API_BASE_URL, ALLOWED_CHAT_IDS, logger
-from utils import get_best_video_url, process_with_parsehub_fallback
+from utils import get_best_video_url, process_with_parsehub_fallback, get_shared_client
 
 router = Router()
 URL_REGEX = re.compile(r"https?://[-A-Za-z0-9+&@#/%?=~_|!:,.;]+[-A-Za-z0-9+&@#/%=~_|]")
@@ -43,12 +45,11 @@ async def handle_message(message: Message, bot: Bot):
         if not any(domain in urls[0].lower() for domain in ["douyin", "tiktok", "snssdk"]):
             return
 
-    target_url = urls[0]
-    reply_msg = await message.reply("正在处理...")
-
+    reply_msg = await message.reply(f"已识别到 {len(urls)} 个链接，正在处理...")
     api_endpoint = f"{API_BASE_URL}/api/hybrid/video_data"
-    
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    client = get_shared_client()
+
+    for target_url in urls:
         try:
             response = await client.get(
                 api_endpoint, 
@@ -60,7 +61,6 @@ async def handle_message(message: Message, bot: Bot):
                 root_data = data.get("data", {})
                 aweme_detail = root_data.get("aweme_detail") if "aweme_detail" in root_data else root_data
                 
-                # HTML Escape for desc to prevent Telegram Parse Error
                 raw_desc = aweme_detail.get("desc", "")
                 safe_desc = html.escape(raw_desc)
                 
@@ -102,50 +102,47 @@ async def handle_message(message: Message, bot: Bot):
 
                     if media_assets:
                         try:
-                            async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0"}, timeout=60.0) as media_client:
-                                for i in range(0, len(media_assets), 10):
-                                    chunk = media_assets[i:i+10]
-                                    media_group = MediaGroupBuilder(caption=caption if i == 0 else None)
-                                    
-                                    download_tasks = [media_client.get(asset["url"]) for asset in chunk]
-                                    responses = await asyncio.gather(*download_tasks, return_exceptions=True)
-                                    
-                                    buffer_list = []
-                                    for idx, res in enumerate(responses):
-                                        if isinstance(res, httpx.Response) and res.status_code == 200:
-                                            asset = chunk[idx]
-                                            asset_type = asset["type"]
-                                            ext = "webp" if asset_type == "photo" else "mp4"
-                                            buffer_list.append({
-                                                "bytes": res.content,
-                                                "filename": f"media_{i}_{idx}.{ext}",
-                                                "type": asset_type,
-                                                "width": asset.get("width"),
-                                                "height": asset.get("height")
-                                            })
-                                            
-                                    for item in buffer_list:
-                                        file_obj = BufferedInputFile(item["bytes"], filename=item["filename"])
-                                        if item["type"] == "photo":
-                                            media_group.add_photo(media=file_obj)
-                                        else:
-                                            kwargs = {}
-                                            if item.get("width"): kwargs["width"] = int(item["width"])
-                                            if item.get("height"): kwargs["height"] = int(item["height"])
-                                            media_group.add_video(media=file_obj, **kwargs)
-                                    
-                                    if buffer_list:
-                                        await bot.send_media_group(
-                                            chat_id=message.chat.id,
-                                            media=media_group.build(),
-                                            reply_to_message_id=message.message_id if i == 0 else None,
-                                            request_timeout=60
-                                        )
+                            for i in range(0, len(media_assets), 10):
+                                chunk = media_assets[i:i+10]
+                                media_group = MediaGroupBuilder(caption=caption if i == 0 else None)
+                                
+                                download_tasks = [client.get(asset["url"], headers={"User-Agent": "Mozilla/5.0"}) for asset in chunk]
+                                responses = await asyncio.gather(*download_tasks, return_exceptions=True)
+                                
+                                buffer_list = []
+                                for idx, res in enumerate(responses):
+                                    if isinstance(res, httpx.Response) and res.status_code == 200:
+                                        asset = chunk[idx]
+                                        asset_type = asset["type"]
+                                        ext = "webp" if asset_type == "photo" else "mp4"
+                                        buffer_list.append({
+                                            "bytes": res.content,
+                                            "filename": f"media_{i}_{idx}.{ext}",
+                                            "type": asset_type,
+                                            "width": asset.get("width"),
+                                            "height": asset.get("height")
+                                        })
+                                        
+                                for item in buffer_list:
+                                    file_obj = BufferedInputFile(item["bytes"], filename=item["filename"])
+                                    if item["type"] == "photo":
+                                        media_group.add_photo(media=file_obj)
+                                    else:
+                                        kwargs = {}
+                                        if item.get("width"): kwargs["width"] = int(item["width"])
+                                        if item.get("height"): kwargs["height"] = int(item["height"])
+                                        media_group.add_video(media=file_obj, **kwargs)
+                                
+                                if buffer_list:
+                                    await bot.send_media_group(
+                                        chat_id=message.chat.id,
+                                        media=media_group.build(),
+                                        reply_to_message_id=message.message_id if i == 0 else None,
+                                        request_timeout=60
+                                    )
                         except Exception as sub_e:
-                            logger.error(f"MediaGroup send error: {sub_e}")
-                        
-                        await reply_msg.delete()
-                        return
+                            logger.error(f"MediaGroup send error", exc_info=True)
+                        continue  # End processing for this iteration (image handled)
 
                 video_info = aweme_detail.get("video", {})
                 
@@ -195,18 +192,15 @@ async def handle_message(message: Message, bot: Bot):
                             supports_streaming=True,
                             request_timeout=120
                         )
-                        await reply_msg.delete()
-                        
                     except (TelegramEntityTooLarge, TelegramBadRequest, asyncio.TimeoutError, Exception) as e:
+                        temp_filename = f"video_{message.chat.id}_{message.message_id}_{uuid.uuid4().hex[:6]}.mp4"
+                        temp_filepath = os.path.join("/var/lib/telegram-bot-api", temp_filename)
                         try:
-                            temp_filename = f"video_{message.message_id}.mp4"
-                            temp_filepath = os.path.join("/var/lib/telegram-bot-api", temp_filename)
-                            
                             async with client.stream("GET", video_url, timeout=600.0) as video_response:
                                 video_response.raise_for_status()
-                                with open(temp_filepath, "wb") as f:
+                                async with aiofiles.open(temp_filepath, "wb") as f:
                                     async for chunk in video_response.aiter_bytes(chunk_size=1024*1024):
-                                        f.write(chunk)
+                                        await f.write(chunk)
                             
                             local_video_file = FSInputFile(temp_filepath)
                             
@@ -221,15 +215,11 @@ async def handle_message(message: Message, bot: Bot):
                                 supports_streaming=True,
                                 request_timeout=600
                             )
-                            await reply_msg.delete()
-                            
-                            if os.path.exists(temp_filepath):
-                                os.remove(temp_filepath)
-                                
                         except Exception as sub_e:
-                            logger.error(f"Fallback download error: {str(sub_e)}")
-                            await reply_msg.edit_text("解析失败: 视频过大或下载超时")
-                            if 'temp_filepath' in locals() and os.path.exists(temp_filepath):
+                            logger.error(f"Fallback download error", exc_info=True)
+                            await message.reply(f"解析失败: 视频过大或下载超时 ({target_url})")
+                        finally:
+                            if os.path.exists(temp_filepath):
                                 os.remove(temp_filepath)
                 else:
                     await process_with_parsehub_fallback(target_url, message, bot, reply_msg, message.message_id)
@@ -237,8 +227,14 @@ async def handle_message(message: Message, bot: Bot):
                 await process_with_parsehub_fallback(target_url, message, bot, reply_msg, message.message_id)
 
         except Exception as e:
-            logger.error(f"Error occurred: {str(e)}")
+            logger.error(f"Error occurred processing {target_url}", exc_info=True)
             await process_with_parsehub_fallback(target_url, message, bot, reply_msg, message.message_id)
+
+    if reply_msg:
+        try:
+            await reply_msg.delete()
+        except Exception:
+            pass
 
 @router.channel_post(F.text, WhiteListFilter())
 async def handle_channel_post(message: Message, bot: Bot):
@@ -249,11 +245,10 @@ async def handle_channel_post(message: Message, bot: Bot):
     if not any(domain in urls[0].lower() for domain in ["douyin", "tiktok", "snssdk"]):
         return
 
-    target_url = urls[0]
-    
     api_endpoint = f"{API_BASE_URL}/api/hybrid/video_data"
+    client = get_shared_client()
     
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    for target_url in urls:
         try:
             response = await client.get(
                 api_endpoint, 
@@ -265,7 +260,6 @@ async def handle_channel_post(message: Message, bot: Bot):
                 root_data = data.get("data", {})
                 aweme_detail = root_data.get("aweme_detail") if "aweme_detail" in root_data else root_data
                 
-                # HTML Escape for desc to prevent Telegram Parse Error
                 raw_desc = aweme_detail.get("desc", "")
                 safe_desc = html.escape(raw_desc)
                 
@@ -307,48 +301,46 @@ async def handle_channel_post(message: Message, bot: Bot):
 
                     if media_assets:
                         try:
-                            async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0"}, timeout=60.0) as media_client:
-                                for i in range(0, len(media_assets), 10):
-                                    chunk = media_assets[i:i+10]
-                                    media_group = MediaGroupBuilder(caption=caption if i == 0 else None)
-                                    
-                                    download_tasks = [media_client.get(asset["url"]) for asset in chunk]
-                                    responses = await asyncio.gather(*download_tasks, return_exceptions=True)
-                                    
-                                    buffer_list = []
-                                    for idx, res in enumerate(responses):
-                                        if isinstance(res, httpx.Response) and res.status_code == 200:
-                                            asset = chunk[idx]
-                                            asset_type = asset["type"]
-                                            ext = "webp" if asset_type == "photo" else "mp4"
-                                            buffer_list.append({
-                                                "bytes": res.content,
-                                                "filename": f"media_{i}_{idx}.{ext}",
-                                                "type": asset_type,
-                                                "width": asset.get("width"),
-                                                "height": asset.get("height")
-                                            })
-                                            
-                                    for item in buffer_list:
-                                        file_obj = BufferedInputFile(item["bytes"], filename=item["filename"])
-                                        if item["type"] == "photo":
-                                            media_group.add_photo(media=file_obj)
-                                        else:
-                                            kwargs = {}
-                                            if item.get("width"): kwargs["width"] = int(item["width"])
-                                            if item.get("height"): kwargs["height"] = int(item["height"])
-                                            media_group.add_video(media=file_obj, **kwargs)
-                                    
-                                    if buffer_list:
-                                        await bot.send_media_group(
-                                            chat_id=message.chat.id,
-                                            media=media_group.build(),
-                                            request_timeout=60
-                                        )
-                            await message.delete()
+                            for i in range(0, len(media_assets), 10):
+                                chunk = media_assets[i:i+10]
+                                media_group = MediaGroupBuilder(caption=caption if i == 0 else None)
+                                
+                                download_tasks = [client.get(asset["url"], headers={"User-Agent": "Mozilla/5.0"}) for asset in chunk]
+                                responses = await asyncio.gather(*download_tasks, return_exceptions=True)
+                                
+                                buffer_list = []
+                                for idx, res in enumerate(responses):
+                                    if isinstance(res, httpx.Response) and res.status_code == 200:
+                                        asset = chunk[idx]
+                                        asset_type = asset["type"]
+                                        ext = "webp" if asset_type == "photo" else "mp4"
+                                        buffer_list.append({
+                                            "bytes": res.content,
+                                            "filename": f"media_{i}_{idx}.{ext}",
+                                            "type": asset_type,
+                                            "width": asset.get("width"),
+                                            "height": asset.get("height")
+                                        })
+                                        
+                                for item in buffer_list:
+                                    file_obj = BufferedInputFile(item["bytes"], filename=item["filename"])
+                                    if item["type"] == "photo":
+                                        media_group.add_photo(media=file_obj)
+                                    else:
+                                        kwargs = {}
+                                        if item.get("width"): kwargs["width"] = int(item["width"])
+                                        if item.get("height"): kwargs["height"] = int(item["height"])
+                                        media_group.add_video(media=file_obj, **kwargs)
+                                
+                                if buffer_list:
+                                    await bot.send_media_group(
+                                        chat_id=message.chat.id,
+                                        media=media_group.build(),
+                                        request_timeout=60
+                                    )
                         except Exception as sub_e:
-                            logger.error(f"Channel MediaGroup send error: {sub_e}")
-                        return
+                            logger.error(f"Channel MediaGroup send error", exc_info=True)
+                        continue
 
                 video_info = aweme_detail.get("video", {})
                 
@@ -397,18 +389,15 @@ async def handle_channel_post(message: Message, bot: Bot):
                             supports_streaming=True,
                             request_timeout=120
                         )
-                        await message.delete()
-                        
                     except (TelegramEntityTooLarge, TelegramBadRequest, asyncio.TimeoutError, Exception) as e:
+                        temp_filename = f"message_{message.chat.id}_{message.message_id}_{uuid.uuid4().hex[:6]}.mp4"
+                        temp_filepath = os.path.join("/var/lib/telegram-bot-api", temp_filename)
                         try:
-                            temp_filename = f"message_{message.message_id}.mp4"
-                            temp_filepath = os.path.join("/var/lib/telegram-bot-api", temp_filename)
-                            
                             async with client.stream("GET", video_url, timeout=600.0) as video_response:
                                 video_response.raise_for_status()
-                                with open(temp_filepath, "wb") as f:
+                                async with aiofiles.open(temp_filepath, "wb") as f:
                                     async for chunk in video_response.aiter_bytes(chunk_size=1024*1024):
-                                        f.write(chunk)
+                                        await f.write(chunk)
                             
                             local_video_file = FSInputFile(temp_filepath)
                             
@@ -422,14 +411,10 @@ async def handle_channel_post(message: Message, bot: Bot):
                                 supports_streaming=True,
                                 request_timeout=600
                             )
-                            await message.delete()
-                            
-                            if os.path.exists(temp_filepath):
-                                os.remove(temp_filepath)
-                                
                         except Exception as sub_e:
-                            logger.error(f"Channel Fallback download error: {str(sub_e)}")
-                            if 'temp_filepath' in locals() and os.path.exists(temp_filepath):
+                            logger.error(f"Channel Fallback download error", exc_info=True)
+                        finally:
+                            if os.path.exists(temp_filepath):
                                 os.remove(temp_filepath)
 
                 else:
@@ -438,5 +423,10 @@ async def handle_channel_post(message: Message, bot: Bot):
                 await process_with_parsehub_fallback(target_url, message, bot, None, None)
 
         except Exception as e:
-            logger.error(f"Channel Error occurred: {str(e)}")
+            logger.error(f"Channel Error occurred processing {target_url}", exc_info=True)
             await process_with_parsehub_fallback(target_url, message, bot, None, None)
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
