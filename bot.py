@@ -95,7 +95,7 @@ async def process_with_parsehub_fallback(target_url: str, message: Message, repl
         result = await ph.parse(target_url, cookie=DOUYIN_COOKIE)
         
         safe_desc = html.escape(result.title or "")
-        caption = f"<a href='{target_url}'>原视频链接</a>\n{safe_desc}" if safe_desc else f"<a href='{target_url}'>原视频链接</a>"
+        caption = f"<a href='{target_url}'>{safe_desc}</a>" if safe_desc else f"<a href='{target_url}'>视频链接</a>"
         
         media_list = []
         if isinstance(result.media, Sequence):
@@ -282,20 +282,11 @@ async def handle_message(message: Message):
                 root_data = data.get("data", {})
                 aweme_detail = root_data.get("aweme_detail") if "aweme_detail" in root_data else root_data
                 
-                author_info = aweme_detail.get("author", {})
-                nickname = author_info.get("nickname", "未知作者")
-                sec_uid = author_info.get("sec_uid", "")
-                
-                # HTML Escape for desc and nickname to prevent Telegram Parse Error
+                # HTML Escape for desc to prevent Telegram Parse Error
                 raw_desc = aweme_detail.get("desc", "")
                 safe_desc = html.escape(raw_desc)
-                safe_nickname = html.escape(nickname)
                 
-                if sec_uid:
-                    author_url = f"https://www.douyin.com/user/{sec_uid}"
-                    caption = f"<a href='{author_url}'>{safe_nickname}</a>\n{safe_desc}" if safe_desc else f"<a href='{author_url}'>{safe_nickname}</a>"
-                else:
-                    caption = f"<b>{safe_nickname}</b>\n{safe_desc}" if safe_desc else f"<b>{safe_nickname}</b>"
+                caption = f"<a href='{target_url}'>{safe_desc}</a>" if safe_desc else f"<a href='{target_url}'>视频链接</a>"
 
                 images = aweme_detail.get("images", [])
                 if images:
@@ -485,20 +476,11 @@ async def handle_channel_post(message: Message):
                 root_data = data.get("data", {})
                 aweme_detail = root_data.get("aweme_detail") if "aweme_detail" in root_data else root_data
                 
-                author_info = aweme_detail.get("author", {})
-                nickname = author_info.get("nickname", "未知作者")
-                sec_uid = author_info.get("sec_uid", "")
-                
-                # HTML Escape for desc and nickname
+                # HTML Escape for desc to prevent Telegram Parse Error
                 raw_desc = aweme_detail.get("desc", "")
                 safe_desc = html.escape(raw_desc)
-                safe_nickname = html.escape(nickname)
                 
-                if sec_uid:
-                    author_url = f"https://www.douyin.com/user/{sec_uid}"
-                    caption = f"<a href='{author_url}'>{safe_nickname}</a>\n{safe_desc}" if safe_desc else f"<a href='{author_url}'>{safe_nickname}</a>"
-                else:
-                    caption = f"<b>{safe_nickname}</b>\n{safe_desc}" if safe_desc else f"<b>{safe_nickname}</b>"
+                caption = f"<a href='{target_url}'>{safe_desc}</a>" if safe_desc else f"<a href='{target_url}'>视频链接</a>"
 
                 images = aweme_detail.get("images", [])
                 if images:
