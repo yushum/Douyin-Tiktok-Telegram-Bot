@@ -96,37 +96,37 @@ async def process_with_parsehub_fallback(target_url: str, message: Message, bot:
                         download_tasks = [media_client.get(asset["url"], headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}) for asset in chunk]
                         responses = await asyncio.gather(*download_tasks, return_exceptions=True)
                             
-                            buffer_list = []
-                            for idx, res in enumerate(responses):
-                                if isinstance(res, httpx.Response) and res.status_code == 200:
-                                    asset = chunk[idx]
-                                    asset_type = asset["type"]
-                                    ext = "webp" if asset_type == "photo" else "mp4"
-                                    buffer_list.append({
-                                        "bytes": res.content,
-                                        "filename": f"media_{i}_{idx}.{ext}",
-                                        "type": asset_type,
-                                        "width": asset.get("width"),
-                                        "height": asset.get("height")
-                                    })
-                                    
-                            for item in buffer_list:
-                                file_obj = BufferedInputFile(item["bytes"], filename=item["filename"])
-                                if item["type"] == "photo":
-                                    media_group.add_photo(media=file_obj)
-                                else:
-                                    kwargs = {}
-                                    if item.get("width"): kwargs["width"] = int(item["width"])
-                                    if item.get("height"): kwargs["height"] = int(item["height"])
-                                    media_group.add_video(media=file_obj, **kwargs)
-                            
-                            if buffer_list:
-                                await bot.send_media_group(
-                                    chat_id=message.chat.id,
-                                    media=media_group.build(),
-                                    reply_to_message_id=reply_to_msg_id if i == 0 else None,
-                                    request_timeout=60
-                                )
+                        buffer_list = []
+                        for idx, res in enumerate(responses):
+                            if isinstance(res, httpx.Response) and res.status_code == 200:
+                                asset = chunk[idx]
+                                asset_type = asset["type"]
+                                ext = "webp" if asset_type == "photo" else "mp4"
+                                buffer_list.append({
+                                    "bytes": res.content,
+                                    "filename": f"media_{i}_{idx}.{ext}",
+                                    "type": asset_type,
+                                    "width": asset.get("width"),
+                                    "height": asset.get("height")
+                                })
+                                
+                        for item in buffer_list:
+                            file_obj = BufferedInputFile(item["bytes"], filename=item["filename"])
+                            if item["type"] == "photo":
+                                media_group.add_photo(media=file_obj)
+                            else:
+                                kwargs = {}
+                                if item.get("width"): kwargs["width"] = int(item["width"])
+                                if item.get("height"): kwargs["height"] = int(item["height"])
+                                media_group.add_video(media=file_obj, **kwargs)
+                        
+                        if buffer_list:
+                            await bot.send_media_group(
+                                chat_id=message.chat.id,
+                                media=media_group.build(),
+                                reply_to_message_id=reply_to_msg_id if i == 0 else None,
+                                request_timeout=60
+                            )
                 except Exception as sub_e:
                     logger.error(f"MediaGroup send error (ParseHub): {sub_e}")
                 
