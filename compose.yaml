@@ -21,6 +21,7 @@ services:
       - BOT_TOKEN=${BOT_TOKEN}
       - API_BASE_URL=${API_BASE_URL:-https://douyin.wtf}
       - ALLOWED_CHAT_IDS=${ALLOWED_CHAT_IDS:-}
+      - DOUYIN_COOKIE=${DOUYIN_COOKIE:-}
       - LOCAL_API_SERVER=http://bot-api-server:8081
     volumes:
       - ./data:/var/lib/telegram-bot-api
