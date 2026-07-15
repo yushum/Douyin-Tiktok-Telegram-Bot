@@ -7,6 +7,7 @@ from aiogram.client.telegram import TelegramAPIServer
 
 from config import BOT_TOKEN, LOCAL_API_SERVER, logger
 from handlers import router
+from utils import close_shared_client
 
 async def main():
     if LOCAL_API_SERVER:
@@ -19,9 +20,15 @@ async def main():
 
     dp = Dispatcher()
     dp.include_router(router)
+    dp.shutdown.register(on_shutdown)
     
     logger.info("Bot is running...")
     await dp.start_polling(bot)
+
+async def on_shutdown(**kwargs):
+    """Gracefully close shared resources on shutdown."""
+    logger.info("Shutting down, closing HTTP client...")
+    await close_shared_client()
 
 if __name__ == "__main__":
     asyncio.run(main())

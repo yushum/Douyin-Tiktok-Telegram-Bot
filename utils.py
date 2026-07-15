@@ -12,27 +12,46 @@ from parsehub import ParseHub
 from parsehub.types.media_ref import VideoRef, ImageRef, LivePhotoRef, AniRef
 from collections.abc import Sequence
 
-from config import DOUYIN_COOKIE, logger
+from config import DOUYIN_COOKIE, TEMP_DIR, logger
+
+
+class FileTooLargeError(Exception):
+    """Raised when a file exceeds the Telegram upload size limit."""
+    pass
+
 
 _shared_client = None
+
 
 def get_shared_client() -> httpx.AsyncClient:
     global _shared_client
     if _shared_client is None:
-        _shared_client = httpx.AsyncClient(timeout=60.0)
+        _shared_client = httpx.AsyncClient(
+            timeout=60.0,
+            follow_redirects=True,
+        )
     return _shared_client
+
+
+async def close_shared_client():
+    """Gracefully close the shared httpx client."""
+    global _shared_client
+    if _shared_client is not None:
+        await _shared_client.aclose()
+        _shared_client = None
+
 
 def get_best_video_url(video_info, root_data=None):
     video_url = None
     max_width = 0
     max_bitrate = 0
     
-    bit_rate_list = video_info.get("bit_rate", [])
+    bit_rate_list = video_info.get("bit_rate") or []
     for rate in bit_rate_list:
-        play_addr = rate.get("play_addr", {})
+        play_addr = rate.get("play_addr") or {}
         current_width = play_addr.get("width", 0)
         current_bitrate = rate.get("bit_rate", 0)
-        url_list = play_addr.get("url_list", [])
+        url_list = play_addr.get("url_list") or []
         
         if not url_list:
             continue
@@ -43,13 +62,13 @@ def get_best_video_url(video_info, root_data=None):
             video_url = url_list[0]
             
     if not video_url:
-        play_addr = video_info.get("play_addr", {})
-        url_list = play_addr.get("url_list", [])
+        play_addr = video_info.get("play_addr") or {}
+        url_list = play_addr.get("url_list") or []
         if url_list:
             video_url = url_list[0]
             
     if not video_url and root_data:
-        video_dict = root_data.get("video_data", {})
+        video_dict = root_data.get("video_data") or {}
         video_url = video_dict.get("nwm_video_url_HQ") or video_dict.get("nwm_video_url")
         
     if video_url and "/playwm/" in video_url:
@@ -57,7 +76,19 @@ def get_best_video_url(video_info, root_data=None):
         
     return video_url
 
+
 async def process_with_parsehub_fallback(target_url: str, message: Message, bot: Bot, reply_msg: Message = None, reply_to_msg_id: int = None):
+    """Fall back to ParseHub for URL processing.
+    
+    Args:
+        target_url: The URL to process.
+        message: The original message.
+        bot: The bot instance.
+        reply_msg: The "processing..." reply message (None for channel posts).
+            When provided, it will be deleted on success or edited with error text on failure.
+            When None, the original message will be deleted on success (channel behavior).
+        reply_to_msg_id: The message ID to reply to (None for channel posts).
+    """
     try:
         ph = ParseHub()
         result = await ph.parse(target_url, cookie=DOUYIN_COOKIE)
@@ -73,7 +104,8 @@ async def process_with_parsehub_fallback(target_url: str, message: Message, bot:
             media_list = [result.media]
             
         if not media_list:
-            if reply_msg: await reply_msg.edit_text("解析失败: 未找到有效媒体源 (ParseHub)")
+            if reply_msg:
+                await reply_msg.edit_text("解析失败: 未找到有效媒体源 (ParseHub)")
             return
             
         is_video = isinstance(media_list[0], (VideoRef, AniRef))
@@ -130,8 +162,13 @@ async def process_with_parsehub_fallback(target_url: str, message: Message, bot:
                 except Exception as sub_e:
                     logger.error(f"MediaGroup send error (ParseHub): {sub_e}")
                 
-                if reply_msg: await reply_msg.delete()
-                elif not reply_msg: await message.delete()
+                try:
+                    if reply_msg:
+                        await reply_msg.delete()
+                    else:
+                        await message.delete()
+                except Exception:
+                    pass
                 
         else:
             v_ref = media_list[0]
@@ -146,19 +183,19 @@ async def process_with_parsehub_fallback(target_url: str, message: Message, bot:
                     cover_resp = await cover_client.get(v_ref.thumb_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
                     if cover_resp.status_code == 200:
                         thumbnail_file = BufferedInputFile(cover_resp.content, filename="cover.jpeg")
-                except:
+                except Exception:
                     pass
                     
             try:
                 head_client = get_shared_client()
                 head_r = await head_client.head(video_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
                 content_length = int(head_r.headers.get("content-length", 0))
-            except:
+            except Exception:
                 content_length = 0
                 
             try:
                 if content_length > 18 * 1024 * 1024:
-                    raise TelegramEntityTooLarge("File size likely exceeds Telegram URL upload limit")
+                    raise FileTooLargeError(f"File size {content_length} exceeds limit")
                     
                 video_file = URLInputFile(video_url)
                 await bot.send_video(
@@ -172,12 +209,17 @@ async def process_with_parsehub_fallback(target_url: str, message: Message, bot:
                     supports_streaming=True,
                     request_timeout=120
                 )
-                if reply_msg: await reply_msg.delete()
-                elif not reply_msg: await message.delete()
+                try:
+                    if reply_msg:
+                        await reply_msg.delete()
+                    else:
+                        await message.delete()
+                except Exception:
+                    pass
                 
-            except (TelegramEntityTooLarge, TelegramBadRequest, asyncio.TimeoutError, Exception) as e:
+            except (TelegramEntityTooLarge, TelegramBadRequest, asyncio.TimeoutError, FileTooLargeError) as e:
                 temp_filename = f"video_ph_{message.chat.id}_{message.message_id}_{uuid.uuid4().hex[:6]}.mp4"
-                temp_filepath = os.path.join("/var/lib/telegram-bot-api", temp_filename)
+                temp_filepath = os.path.join(TEMP_DIR, temp_filename)
                 
                 try:
                     dl_client = get_shared_client()
@@ -200,16 +242,23 @@ async def process_with_parsehub_fallback(target_url: str, message: Message, bot:
                         supports_streaming=True,
                         request_timeout=600
                     )
-                    if reply_msg: await reply_msg.delete()
-                    elif not reply_msg: await message.delete()
+                    try:
+                        if reply_msg:
+                            await reply_msg.delete()
+                        else:
+                            await message.delete()
+                    except Exception:
+                        pass
                         
                 except Exception as sub_e:
                     logger.error(f"Fallback download error (ParseHub)", exc_info=True)
-                    if reply_msg: await reply_msg.edit_text("解析失败: 视频过大或下载超时 (ParseHub)")
+                    if reply_msg:
+                        await reply_msg.edit_text("解析失败: 视频过大或下载超时 (ParseHub)")
                 finally:
                     if os.path.exists(temp_filepath):
                         os.remove(temp_filepath)
                         
     except Exception as ph_e:
         logger.error(f"ParseHub Error", exc_info=True)
-        if reply_msg: await reply_msg.edit_text("所有解析方式均失败")
+        if reply_msg:
+            await reply_msg.edit_text("所有解析方式均失败")

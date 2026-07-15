@@ -26,6 +26,7 @@ if not BOT_TOKEN:
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://douyin.wtf")
 LOCAL_API_SERVER = os.environ.get("LOCAL_API_SERVER")
 DOUYIN_COOKIE = os.environ.get("DOUYIN_COOKIE", None)
+TEMP_DIR = os.environ.get("TEMP_DIR", "/var/lib/telegram-bot-api")
 
 # =======================
 # Security & Whitelist
