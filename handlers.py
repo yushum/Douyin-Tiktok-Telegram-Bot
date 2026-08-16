@@ -55,7 +55,7 @@ async def handle_message(message: Message, bot: Bot):
         if not any(domain in url.lower() for url in urls for domain in SUPPORTED_DOMAINS):
             return
 
-    reply_msg = await message.reply(f"🔍 已识别到 {len(urls)} 个链接，正在处理中...")
+    reply_msg = await message.reply(f"🔍 已识别到 {len(urls)} 个链接，正在处理中...", parse_mode=None)
     client = get_shared_client()
 
     for target_url in urls:
@@ -69,12 +69,12 @@ async def handle_message(message: Message, bot: Bot):
                     reply_to_msg_id=message.message_id
                 )
                 if not sent:
-                    await message.reply(f"❌ 发送失败: 无法将媒体发送至 Telegram ({target_url})")
+                    await message.reply(f"❌ 发送失败: 无法将媒体发送至 Telegram ({target_url})", parse_mode=None)
             else:
-                await message.reply(f"❌ 解析失败: 未能获取到媒体资源 ({target_url})")
+                await message.reply(f"❌ 解析失败: 未能获取到媒体资源 ({target_url})", parse_mode=None)
         except Exception as e:
             logger.error(f"处理链接异常 ({target_url}): {e}", exc_info=True)
-            await message.reply(f"❌ 处理异常: {e}")
+            await message.reply(f"❌ 处理异常: {e}", parse_mode=None)
 
     # Delete processing status message
     if reply_msg:

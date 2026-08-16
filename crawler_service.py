@@ -116,17 +116,20 @@ async def resolve_canonical_info(
     return extracted_id, canonical_url
 
 
-def pick_best_video_url(video_info: dict, root_data: Optional[dict] = None) -> Optional[str]:
+def pick_best_video_url(video_info: Optional[dict], root_data: Optional[dict] = None) -> Optional[str]:
     """Select the highest resolution/bitrate video stream."""
     if not video_info and not root_data:
         return None
 
+    video_info = video_info or {}
     video_url = None
     max_width = 0
     max_bitrate = 0
 
     bit_rate_list = video_info.get("bit_rate") or []
     for rate in bit_rate_list:
+        if not isinstance(rate, dict):
+            continue
         play_addr = rate.get("play_addr") or {}
         current_width = play_addr.get("width", 0) or 0
         current_bitrate = rate.get("bit_rate", 0) or 0
@@ -181,11 +184,12 @@ async def _extract_aweme_result(
     # Check images (standard Douyin or TikTok format)
     images = aweme_data.get("images") or []
     if not images and "image_post_info" in aweme_data:
-        img_list = aweme_data.get("image_post_info", {}).get("images", [])
+        img_list = (aweme_data.get("image_post_info") or {}).get("images", [])
         for im in img_list:
-            d_url = im.get("display_image", {}).get("url_list", [None])[0]
-            if d_url:
-                images.append({"url_list": [d_url]})
+            if isinstance(im, dict):
+                d_url = ((im.get("display_image") or {}).get("url_list") or [None])[0]
+                if d_url:
+                    images.append({"url_list": [d_url]})
 
     if images:
         extracted_id, canonical_url = await resolve_canonical_info(
@@ -193,6 +197,8 @@ async def _extract_aweme_result(
         )
         assets = []
         for img in images:
+            if not isinstance(img, dict):
+                continue
             live_video = img.get("video") or {}
             live_video_url = pick_best_video_url(live_video) if live_video else None
 
