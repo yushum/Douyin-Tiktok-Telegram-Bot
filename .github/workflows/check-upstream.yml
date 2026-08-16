@@ -1,0 +1,81 @@
+name: Check Upstream Updates
+
+on:
+  schedule:
+    # 每 6 小时检查一次上游是否有更新 (UTC 00:00, 06:00, 12:00, 18:00)
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore upstream cache state
+        uses: actions/cache@v4
+        with:
+          path: .upstream_state
+          key: upstream-cache-${{ github.run_id }}
+          restore-keys: |
+            upstream-cache-
+
+      - name: Query upstream states & compare
+        id: check_upstream
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p .upstream_state
+          
+          # 1. 查询 Evil0ctal GitHub 仓库 master 最新 commit
+          EVIL_SHA=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/Evil0ctal/Douyin_TikTok_Download_API/commits/master" | jq -r '.sha // empty')
+          # 2. 查询 PyPI parsehub 最新版本
+          PH_VER=$(curl -s "https://pypi.org/pypi/parsehub/json" | jq -r '.info.version // empty')
+          
+          echo "Latest Evil0ctal Commit: $EVIL_SHA"
+          echo "Latest ParseHub Version: $PH_VER"
+          
+          OLD_EVIL_SHA=""
+          OLD_PH_VER=""
+          [ -f .upstream_state/evil_sha ] && OLD_EVIL_SHA=$(cat .upstream_state/evil_sha)
+          [ -f .upstream_state/ph_ver ] && OLD_PH_VER=$(cat .upstream_state/ph_ver)
+          
+          echo "Previous Evil0ctal Commit: $OLD_EVIL_SHA"
+          echo "Previous ParseHub Version: $OLD_PH_VER"
+          
+          NEED_BUILD="false"
+          
+          # 如果之前没有任何记录（初次运行），或者 SHA 发生了变化
+          if [ -n "$EVIL_SHA" ] && [ "$EVIL_SHA" != "$OLD_EVIL_SHA" ]; then
+            echo ">>> Detected Evil0ctal update: $OLD_EVIL_SHA -> $EVIL_SHA"
+            echo "$EVIL_SHA" > .upstream_state/evil_sha
+            NEED_BUILD="true"
+          fi
+          
+          # 如果 ParseHub 版本升级
+          if [ -n "$PH_VER" ] && [ "$PH_VER" != "$OLD_PH_VER" ]; then
+            echo ">>> Detected ParseHub update: $OLD_PH_VER -> $PH_VER"
+            echo "$PH_VER" > .upstream_state/ph_ver
+            NEED_BUILD="true"
+          fi
+          
+          echo "need_build=$NEED_BUILD" >> $GITHUB_OUTPUT
+
+      - name: Trigger Build Workflow
+        if: steps.check_upstream.outputs.need_build == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            console.log("Triggering docker-publish workflow due to upstream update...");
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'docker-publish.yml',
+              ref: 'master'
+            });

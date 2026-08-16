@@ -10,13 +10,16 @@
 
 ## ✨ 核心特性
 
-- **超清无损**：自动探测并拉取抖音底层 CDN 提供的最高分辨率源文件 (最高支持 4K)。
-- **实况与图集支持**：完美解析抖音图集和实况照片，以无损图片流 (MediaGroup) 形式发送。
-- **2GB 大文件突破**：基于双容器共享数据卷架构打通 Telegram Local API Server，彻底告别官方 50MB 传输限制，最高支持 2GB 的长视频极速直传。
-- **防盗链穿透**：通过内存缓冲与伪装请求，有效绕过抖音图集和视频封面的 `403 Forbidden` 严格防盗链机制。
+- **双容器极简架构**：内置集成核心爬虫与解析引擎，只需 `bot-api-server` 和 `tg-bot` 两个容器即可运行，告别额外的独立 API 容器和复杂的 yaml 挂载。
+- **内置双引擎高可用**：
+  - **主力引擎**：内置 Evil0ctal 核心爬虫，内存直接调用，支持超清 4K CDN 源文件与无水印图集提取；
+  - **降级引擎**：内置 ParseHub，自动兜底风控或特殊格式链接。
+- **单点凭证管理**：抖音和 TikTok Cookie 统一通过 `.env` 环境变量配置，不再需要重复配置多处文件。
+- **纯净链接规范化**：自动追踪分享短链重定向并提取作品 ID，将超链接格式化为标准干净的 Web 播放页直链（拒绝带有冗余追踪参数的短链）。
+- **实况与图集支持**：完美解析抖音图集和实况照片，以无损图片流 (MediaGroup) 形式原生发送。
+- **2GB 大文件突破**：基于双容器共享数据卷架构打通 Telegram Local API Server，彻底突破官方 50MB 传输限制，最高支持 2GB 的长视频极速直传。
 - **全场景适配**：私聊即时响应；支持频道静默发布与带链接原帖自动清理；群组模式下智能嗅探短链接，实现纯净防打扰。
-- **高可用自动降级**：内置 ParseHub 降级方案，当原 API 失效（例如遇到不支持的“抖音日常”格式）时无缝切换至降级解析。
-- **安全防滥用**：内置多维白名单机制，支持精细化配置授权的用户、群组或频道。
+- **全自动 CI/CD**：GitHub Actions 智能监听 Evil0ctal 与 ParseHub 上游更新，有更新自动构建 multi-arch (amd64/arm64) 镜像推送到 Docker Hub，零浪费算力。
 
 ## 📦 快速部署
 
@@ -32,12 +35,12 @@ TELEGRAM_API_HASH=abcdef1234567890abcdef1234567890
 # 去 @BotFather 申请
 BOT_TOKEN=123456789:ABCdefGHIjklmNOPQrstUVwxyZ
 
-# 默认使用开源演示节点，为保证稳定性，强烈建议自行部署该 API
-API_BASE_URL=https://douyin.wtf
-
-# (可选) 当原 API 解析失败（如不支持的日常视频）时，会调用 ParseHub 降级解析
-# 某些抖音链接需要登录态才能解析，如果你遇到了降级解析也失败的情况，请在此处填入你的抖音网页版 Cookie
+# (可选) 填入你的抖音/TikTok网页版 Cookie（用于防风控或解析需登录的内容）
 DOUYIN_COOKIE=
+TIKTOK_COOKIE=
+
+# (可选) 外部备用 API 节点（默认留空，直接使用内置引擎）
+API_BASE_URL=
 
 # (可选) 白名单配置：填入允许交互的用户ID或群组/频道ID，多个ID用逗号分隔。不填则全员公开。
 ALLOWED_CHAT_IDS=123456789,-100987654321
@@ -54,7 +57,7 @@ docker compose up -d
 
 ## 🛠 高级：从源码构建
 
-如果你希望自行修改代码或进行二次开发，可以使用以下命令在本地重新构建镜像（无需拉取官方镜像）：
+如果你希望自行修改代码或进行二次开发，可以使用以下命令在本地重新构建镜像：
 
 ```bash
 # 请确保你的 compose.yaml 中的 tg-bot 服务开启了 `build: .` 并注释掉了 `image`
@@ -63,4 +66,5 @@ docker compose up -d --build
 
 ## 🙏 致谢
 
-- [Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API) - 提供底层数据解析核心 API 支持。
+- [Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API) - 提供底层数据解析核心爬虫支持。
+- [ParseHub](https://github.com/parsehub/parsehub) - 提供降级与多媒体解析支持。

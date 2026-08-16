@@ -23,10 +23,15 @@ if not BOT_TOKEN:
     logger.critical("BOT_TOKEN 环境变量未设置，程序即将退出。")
     sys.exit(1)
 
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://douyin.wtf")
+# API & Engine Settings
+API_BASE_URL = os.environ.get("API_BASE_URL", "")
 LOCAL_API_SERVER = os.environ.get("LOCAL_API_SERVER")
-DOUYIN_COOKIE = os.environ.get("DOUYIN_COOKIE", None)
+UPSTREAM_API_PATH = os.environ.get("UPSTREAM_API_PATH", "/app/upstream_api")
 TEMP_DIR = os.environ.get("TEMP_DIR", "/var/lib/telegram-bot-api")
+
+# Cookie Configuration (Single point of truth)
+DOUYIN_COOKIE = os.environ.get("DOUYIN_COOKIE", None)
+TIKTOK_COOKIE = os.environ.get("TIKTOK_COOKIE", None)
 
 # =======================
 # Security & Whitelist

@@ -4,24 +4,15 @@ import httpx
 import asyncio
 import uuid
 import aiofiles
+from typing import Optional
 from aiogram import Bot
-from aiogram.types import Message, URLInputFile, FSInputFile, BufferedInputFile
-from aiogram.exceptions import TelegramEntityTooLarge, TelegramBadRequest
+from aiogram.types import URLInputFile, FSInputFile, BufferedInputFile
 from aiogram.utils.media_group import MediaGroupBuilder
-from parsehub import ParseHub
-from parsehub.types.media_ref import VideoRef, ImageRef, LivePhotoRef, AniRef
-from collections.abc import Sequence
 
-from config import DOUYIN_COOKIE, TEMP_DIR, logger
+from config import TEMP_DIR, logger
+from crawler_service import ParsedResult, MediaAsset
 
-
-class FileTooLargeError(Exception):
-    """Raised when a file exceeds the Telegram upload size limit."""
-    pass
-
-
-_shared_client = None
-
+_shared_client: Optional[httpx.AsyncClient] = None
 
 def get_shared_client() -> httpx.AsyncClient:
     global _shared_client
@@ -32,7 +23,6 @@ def get_shared_client() -> httpx.AsyncClient:
         )
     return _shared_client
 
-
 async def close_shared_client():
     """Gracefully close the shared httpx client."""
     global _shared_client
@@ -40,225 +30,196 @@ async def close_shared_client():
         await _shared_client.aclose()
         _shared_client = None
 
+def build_caption(title: str, canonical_url: str) -> str:
+    """Build safe HTML caption with canonical hyperlink."""
+    safe_desc = html.escape(title.strip()) if title else ""
+    if safe_desc:
+        return f"<a href='{canonical_url}'>{safe_desc}</a>"
+    return f"<a href='{canonical_url}'>点击查看原视频/图集</a>"
 
-def get_best_video_url(video_info, root_data=None):
-    video_url = None
-    max_width = 0
-    max_bitrate = 0
-    
-    bit_rate_list = video_info.get("bit_rate") or []
-    for rate in bit_rate_list:
-        play_addr = rate.get("play_addr") or {}
-        current_width = play_addr.get("width", 0)
-        current_bitrate = rate.get("bit_rate", 0)
-        url_list = play_addr.get("url_list") or []
-        
-        if not url_list:
+async def _download_asset_to_buffer(client: httpx.AsyncClient, asset: MediaAsset, idx: int):
+    """Download single media asset into memory buffer."""
+    try:
+        res = await client.get(asset.url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+        if res.status_code == 200:
+            ext = "webp" if asset.type == "photo" else "mp4"
+            return {
+                "bytes": res.content,
+                "filename": f"media_{idx}.{ext}",
+                "type": asset.type,
+                "width": asset.width,
+                "height": asset.height,
+            }
+    except Exception as e:
+        logger.debug(f"Download asset error: {e}")
+    return None
+
+async def send_image_group(
+    bot: Bot,
+    chat_id: int,
+    media_assets: list[MediaAsset],
+    caption: str,
+    reply_to_msg_id: Optional[int] = None
+) -> bool:
+    """Concurrently download and send images/live photos as MediaGroups."""
+    client = get_shared_client()
+    success = False
+
+    for i in range(0, len(media_assets), 10):
+        chunk = media_assets[i:i + 10]
+        download_tasks = [
+            _download_asset_to_buffer(client, asset, i + idx)
+            for idx, asset in enumerate(chunk)
+        ]
+        buffers = await asyncio.gather(*download_tasks, return_exceptions=True)
+        valid_buffers = [b for b in buffers if isinstance(b, dict)]
+
+        if not valid_buffers:
             continue
 
-        if current_width > max_width or (current_width == max_width and current_bitrate > max_bitrate):
-            max_width = current_width
-            max_bitrate = current_bitrate
-            video_url = url_list[0]
-            
-    if not video_url:
-        play_addr = video_info.get("play_addr") or {}
-        url_list = play_addr.get("url_list") or []
-        if url_list:
-            video_url = url_list[0]
-            
-    if not video_url and root_data:
-        video_dict = root_data.get("video_data") or {}
-        video_url = video_dict.get("nwm_video_url_HQ") or video_dict.get("nwm_video_url")
-        
-    if video_url and "/playwm/" in video_url:
-        video_url = video_url.replace("/playwm/", "/play/")
-        
-    return video_url
+        media_group = MediaGroupBuilder(caption=caption if i == 0 else None)
+        for item in valid_buffers:
+            file_obj = BufferedInputFile(item["bytes"], filename=item["filename"])
+            if item["type"] == "photo":
+                media_group.add_photo(media=file_obj)
+            else:
+                kwargs = {}
+                if item.get("width"):
+                    kwargs["width"] = int(item["width"])
+                if item.get("height"):
+                    kwargs["height"] = int(item["height"])
+                media_group.add_video(media=file_obj, **kwargs)
 
+        try:
+            await bot.send_media_group(
+                chat_id=chat_id,
+                media=media_group.build(),
+                reply_to_message_id=reply_to_msg_id if i == 0 else None,
+                request_timeout=120
+            )
+            success = True
+        except Exception as e:
+            logger.error(f"Failed to send media group: {e}", exc_info=True)
 
-async def process_with_parsehub_fallback(target_url: str, message: Message, bot: Bot, reply_msg: Message = None, reply_to_msg_id: int = None):
-    """Fall back to ParseHub for URL processing.
-    
-    Args:
-        target_url: The URL to process.
-        message: The original message.
-        bot: The bot instance.
-        reply_msg: The "processing..." reply message (None for channel posts).
-            When provided, it will be deleted on success or edited with error text on failure.
-            When None, the original message will be deleted on success (channel behavior).
-        reply_to_msg_id: The message ID to reply to (None for channel posts).
-    """
+    return success
+
+async def send_video_media(
+    bot: Bot,
+    chat_id: int,
+    video_url: str,
+    cover_url: Optional[str],
+    caption: str,
+    width: Optional[int],
+    height: Optional[int],
+    reply_to_msg_id: Optional[int] = None
+) -> bool:
+    """Send video via direct URL or local direct upload with Local API."""
+    client = get_shared_client()
+
+    # 1. Fetch thumbnail if present
+    thumbnail_file = None
+    if cover_url:
+        try:
+            cover_resp = await client.get(
+                cover_url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                timeout=10.0
+            )
+            if cover_resp.status_code == 200:
+                thumbnail_file = BufferedInputFile(cover_resp.content, filename="cover.jpeg")
+        except Exception:
+            pass
+
+    # 2. Check content-length for direct URL optimization (< 18MB)
+    content_length = 0
     try:
-        ph = ParseHub()
-        result = await ph.parse(target_url, cookie=DOUYIN_COOKIE)
-        
-        video_link = getattr(result, "url", target_url) or target_url
-        safe_desc = html.escape(result.title or "")
-        caption = f"<a href='{video_link}'>{safe_desc}</a>" if safe_desc else f"<a href='{video_link}'>视频链接</a>"
-        
-        media_list = []
-        if isinstance(result.media, Sequence):
-            media_list = list(result.media)
-        elif result.media:
-            media_list = [result.media]
-            
-        if not media_list:
-            if reply_msg:
-                await reply_msg.edit_text("解析失败: 未找到有效媒体源 (ParseHub)")
-            return
-            
-        is_video = isinstance(media_list[0], (VideoRef, AniRef))
-        
-        if not is_video:
-            media_assets = []
-            for m in media_list:
-                if isinstance(m, LivePhotoRef) and m.video_url:
-                    media_assets.append({"type": "video", "url": m.video_url, "width": m.width, "height": m.height})
-                else:
-                    media_assets.append({"type": "photo", "url": m.url, "width": m.width, "height": m.height})
-                    
-            if media_assets:
-                try:
-                    media_client = get_shared_client()
-                    for i in range(0, len(media_assets), 10):
-                        chunk = media_assets[i:i+10]
-                        media_group = MediaGroupBuilder(caption=caption if i == 0 else None)
-                        
-                        download_tasks = [media_client.get(asset["url"], headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}) for asset in chunk]
-                        responses = await asyncio.gather(*download_tasks, return_exceptions=True)
-                            
-                        buffer_list = []
-                        for idx, res in enumerate(responses):
-                            if isinstance(res, httpx.Response) and res.status_code == 200:
-                                asset = chunk[idx]
-                                asset_type = asset["type"]
-                                ext = "webp" if asset_type == "photo" else "mp4"
-                                buffer_list.append({
-                                    "bytes": res.content,
-                                    "filename": f"media_{i}_{idx}.{ext}",
-                                    "type": asset_type,
-                                    "width": asset.get("width"),
-                                    "height": asset.get("height")
-                                })
-                                
-                        for item in buffer_list:
-                            file_obj = BufferedInputFile(item["bytes"], filename=item["filename"])
-                            if item["type"] == "photo":
-                                media_group.add_photo(media=file_obj)
-                            else:
-                                kwargs = {}
-                                if item.get("width"): kwargs["width"] = int(item["width"])
-                                if item.get("height"): kwargs["height"] = int(item["height"])
-                                media_group.add_video(media=file_obj, **kwargs)
-                        
-                        if buffer_list:
-                            await bot.send_media_group(
-                                chat_id=message.chat.id,
-                                media=media_group.build(),
-                                reply_to_message_id=reply_to_msg_id if i == 0 else None,
-                                request_timeout=60
-                            )
-                except Exception as sub_e:
-                    logger.error(f"MediaGroup send error (ParseHub): {sub_e}")
-                
-                try:
-                    if reply_msg:
-                        await reply_msg.delete()
-                    else:
-                        await message.delete()
-                except Exception:
-                    pass
-                
-        else:
-            v_ref = media_list[0]
-            video_url = v_ref.url
-            vid_width = v_ref.width
-            vid_height = v_ref.height
-            
-            thumbnail_file = None
-            if getattr(v_ref, 'thumb_url', None):
-                try:
-                    cover_client = get_shared_client()
-                    cover_resp = await cover_client.get(v_ref.thumb_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
-                    if cover_resp.status_code == 200:
-                        thumbnail_file = BufferedInputFile(cover_resp.content, filename="cover.jpeg")
-                except Exception:
-                    pass
-                    
+        head_resp = await client.head(
+            video_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=10.0
+        )
+        content_length = int(head_resp.headers.get("content-length", 0))
+    except Exception:
+        pass
+
+    # 3. Fast path: Direct URL sending if file is small
+    if 0 < content_length <= 18 * 1024 * 1024:
+        try:
+            video_file = URLInputFile(video_url)
+            await bot.send_video(
+                chat_id=chat_id,
+                video=video_file,
+                caption=caption,
+                thumbnail=thumbnail_file,
+                width=width,
+                height=height,
+                reply_to_message_id=reply_to_msg_id,
+                supports_streaming=True,
+                request_timeout=120
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"Direct URL send failed, falling back to local download: {e}")
+
+    # 4. Fallback/Large File path: Stream download to TEMP_DIR and upload via Local API Server
+    temp_filename = f"video_{chat_id}_{uuid.uuid4().hex[:8]}.mp4"
+    temp_filepath = os.path.join(TEMP_DIR, temp_filename)
+    try:
+        async with client.stream("GET", video_url, timeout=600.0) as resp:
+            resp.raise_for_status()
+            async with aiofiles.open(temp_filepath, "wb") as f:
+                async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
+                    await f.write(chunk)
+
+        local_video_file = FSInputFile(temp_filepath)
+        await bot.send_video(
+            chat_id=chat_id,
+            video=local_video_file,
+            caption=caption,
+            thumbnail=thumbnail_file,
+            width=width,
+            height=height,
+            reply_to_message_id=reply_to_msg_id,
+            supports_streaming=True,
+            request_timeout=600
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send video: {e}", exc_info=True)
+        return False
+    finally:
+        if os.path.exists(temp_filepath):
             try:
-                head_client = get_shared_client()
-                head_r = await head_client.head(video_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
-                content_length = int(head_r.headers.get("content-length", 0))
+                os.remove(temp_filepath)
             except Exception:
-                content_length = 0
-                
-            try:
-                if content_length > 18 * 1024 * 1024:
-                    raise FileTooLargeError(f"File size {content_length} exceeds limit")
-                    
-                video_file = URLInputFile(video_url)
-                await bot.send_video(
-                    chat_id=message.chat.id,
-                    video=video_file,
-                    caption=caption,
-                    thumbnail=thumbnail_file,
-                    width=vid_width,      
-                    height=vid_height,    
-                    reply_to_message_id=reply_to_msg_id,
-                    supports_streaming=True,
-                    request_timeout=120
-                )
-                try:
-                    if reply_msg:
-                        await reply_msg.delete()
-                    else:
-                        await message.delete()
-                except Exception:
-                    pass
-                
-            except (TelegramEntityTooLarge, TelegramBadRequest, asyncio.TimeoutError, FileTooLargeError) as e:
-                temp_filename = f"video_ph_{message.chat.id}_{message.message_id}_{uuid.uuid4().hex[:6]}.mp4"
-                temp_filepath = os.path.join(TEMP_DIR, temp_filename)
-                
-                try:
-                    dl_client = get_shared_client()
-                    async with dl_client.stream("GET", video_url, timeout=600.0) as video_response:
-                        video_response.raise_for_status()
-                        async with aiofiles.open(temp_filepath, "wb") as f:
-                            async for chunk in video_response.aiter_bytes(chunk_size=1024*1024):
-                                await f.write(chunk)
-                    
-                    local_video_file = FSInputFile(temp_filepath)
-                    
-                    await bot.send_video(
-                        chat_id=message.chat.id,
-                        video=local_video_file,
-                        caption=caption,
-                        thumbnail=thumbnail_file,
-                        width=vid_width,      
-                        height=vid_height,    
-                        reply_to_message_id=reply_to_msg_id,
-                        supports_streaming=True,
-                        request_timeout=600
-                    )
-                    try:
-                        if reply_msg:
-                            await reply_msg.delete()
-                        else:
-                            await message.delete()
-                    except Exception:
-                        pass
-                        
-                except Exception as sub_e:
-                    logger.error(f"Fallback download error (ParseHub)", exc_info=True)
-                    if reply_msg:
-                        await reply_msg.edit_text("解析失败: 视频过大或下载超时 (ParseHub)")
-                finally:
-                    if os.path.exists(temp_filepath):
-                        os.remove(temp_filepath)
-                        
-    except Exception as ph_e:
-        logger.error(f"ParseHub Error", exc_info=True)
-        if reply_msg:
-            await reply_msg.edit_text("所有解析方式均失败")
+                pass
+
+async def send_parsed_media(
+    bot: Bot,
+    chat_id: int,
+    result: ParsedResult,
+    reply_to_msg_id: Optional[int] = None
+) -> bool:
+    """Unified entrypoint to dispatch media sending."""
+    caption = build_caption(result.title, result.canonical_url)
+
+    if result.media_type == "image" and result.media_assets:
+        return await send_image_group(
+            bot=bot,
+            chat_id=chat_id,
+            media_assets=result.media_assets,
+            caption=caption,
+            reply_to_msg_id=reply_to_msg_id
+        )
+    elif result.media_type == "video" and result.video_url:
+        return await send_video_media(
+            bot=bot,
+            chat_id=chat_id,
+            video_url=result.video_url,
+            cover_url=result.cover_url,
+            caption=caption,
+            width=result.video_width,
+            height=result.video_height,
+            reply_to_msg_id=reply_to_msg_id
+        )
+    return False

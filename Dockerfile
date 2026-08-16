@@ -1,13 +1,23 @@
 FROM python:3.14-slim
 
 WORKDIR /app
+
+# 安装 git 和基础依赖
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# 拉取 Evil0ctal 上游最新解析器核心
+RUN git clone --depth 1 https://github.com/Evil0ctal/Douyin_TikTok_Download_API.git /app/upstream_api
+
 COPY requirements.txt .
 
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt -r /app/upstream_api/requirements.txt
 
-# 强制禁用 Python 的标准输出缓冲，实时打印日志
+# 环境变量设置
 ENV PYTHONUNBUFFERED=1
+ENV UPSTREAM_API_PATH=/app/upstream_api
 
 COPY *.py .
 
