@@ -44,7 +44,9 @@ async def cmd_help(message: Message):
 
 @router.message(F.text, WhiteListFilter())
 async def handle_message(message: Message, bot: Bot):
-    urls = URL_REGEX.findall(message.text)
+    # Extract and deduplicate URLs preserving order
+    raw_urls = URL_REGEX.findall(message.text)
+    urls = list(dict.fromkeys(raw_urls))
     if not urls:
         return
 
@@ -84,7 +86,8 @@ async def handle_message(message: Message, bot: Bot):
 
 @router.channel_post(F.text, WhiteListFilter())
 async def handle_channel_post(message: Message, bot: Bot):
-    urls = URL_REGEX.findall(message.text)
+    raw_urls = URL_REGEX.findall(message.text)
+    urls = list(dict.fromkeys(raw_urls))
     if not urls:
         return
 

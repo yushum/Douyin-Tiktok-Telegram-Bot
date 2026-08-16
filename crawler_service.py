@@ -38,6 +38,7 @@ class ParsedResult:
 AWEME_ID_REGEX = re.compile(r'(?:video/|note/|photo/|share/video/|/item/|modal_id=)(\d{18,21})')
 DIGITS_REGEX = re.compile(r'\b(\d{18,21})\b')
 TIKTOK_USER_REGEX = re.compile(r'@([A-Za-z0-9_.-]+)')
+BILIBILI_ID_REGEX = re.compile(r'(?:video/|/)(BV[0-9A-Za-z]{10}|av\d+)', re.IGNORECASE)
 
 async def resolve_canonical_info(
     raw_url: str,
@@ -46,53 +47,71 @@ async def resolve_canonical_info(
     is_image: bool = False,
     client: Optional[httpx.AsyncClient] = None,
 ) -> tuple[Optional[str], str]:
-    """Extract standard aweme_id and construct a clean canonical desktop URL."""
+    """Extract standard media ID and construct a clean canonical desktop URL."""
     extracted_id = aweme_id
+    final_url = raw_url
 
-    # 1. Try extracting from raw_url directly
-    if not extracted_id:
-        m = AWEME_ID_REGEX.search(raw_url) or DIGITS_REGEX.search(raw_url)
-        if m:
-            extracted_id = m.group(1)
-
-    # 2. If it's a short URL without ID, follow redirect to extract real ID
-    if not extracted_id and any(short in raw_url.lower() for short in ["v.douyin.com", "vm.tiktok.com", "vt.tiktok.com"]):
+    # 1. If it's a short URL, follow redirect to extract real ID & final URL
+    short_domains = ["v.douyin.com", "vm.tiktok.com", "vt.tiktok.com", "b23.tv"]
+    if any(short in raw_url.lower() for short in short_domains):
         try:
             should_close = False
-            if client is None:
-                client = httpx.AsyncClient(timeout=10.0, follow_redirects=True)
+            req_client = client
+            if req_client is None:
+                req_client = httpx.AsyncClient(timeout=10.0, follow_redirects=True)
                 should_close = True
             
-            resp = await client.head(raw_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, follow_redirects=True)
+            resp = await req_client.head(
+                raw_url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                follow_redirects=True
+            )
             final_url = str(resp.url)
-            m = AWEME_ID_REGEX.search(final_url) or DIGITS_REGEX.search(final_url)
-            if m:
-                extracted_id = m.group(1)
             
             if should_close:
-                await client.aclose()
+                await req_client.aclose()
         except Exception as e:
             logger.debug(f"Follow redirect failed for {raw_url}: {e}")
 
-    # 3. Construct clean canonical URL
-    is_tiktok = "tiktok" in raw_url.lower()
-    is_image = is_image or ("/note/" in raw_url.lower()) or ("/photo/" in raw_url.lower())
+    # 2. Try extracting ID if not provided
+    if not extracted_id:
+        if "bilibili" in final_url.lower() or "b23.tv" in raw_url.lower():
+            bili_m = BILIBILI_ID_REGEX.search(final_url) or BILIBILI_ID_REGEX.search(raw_url)
+            if bili_m:
+                extracted_id = bili_m.group(1)
+        else:
+            m = AWEME_ID_REGEX.search(final_url) or AWEME_ID_REGEX.search(raw_url) or DIGITS_REGEX.search(final_url)
+            if m:
+                extracted_id = m.group(1)
+
+    # 3. Construct clean canonical URL based on domain
+    lower_target = final_url.lower() + " " + raw_url.lower()
+    is_tiktok = "tiktok" in lower_target
+    is_bilibili = "bilibili" in lower_target or "b23.tv" in lower_target
+    is_image = is_image or ("/note/" in lower_target) or ("/photo/" in lower_target)
     
-    if extracted_id:
-        if is_tiktok:
+    if is_bilibili:
+        if extracted_id:
+            canonical_url = f"https://www.bilibili.com/video/{extracted_id}"
+        else:
+            canonical_url = final_url.split('?')[0]
+    elif is_tiktok:
+        if extracted_id:
             user = unique_id
             if not user:
-                user_m = TIKTOK_USER_REGEX.search(raw_url)
+                user_m = TIKTOK_USER_REGEX.search(final_url) or TIKTOK_USER_REGEX.search(raw_url)
                 user = user_m.group(1) if user_m else "user"
             action = "photo" if is_image else "video"
             canonical_url = f"https://www.tiktok.com/@{user}/{action}/{extracted_id}"
         else:
+            canonical_url = final_url.split('?')[0]
+    else:
+        # Default to Douyin
+        if extracted_id:
             action = "note" if is_image else "video"
             canonical_url = f"https://www.douyin.com/{action}/{extracted_id}"
-    else:
-        # Fallback: clean query parameters from the url if possible
-        clean_url = raw_url.split('?')[0] if '?' in raw_url else raw_url
-        canonical_url = clean_url
+        else:
+            canonical_url = final_url.split('?')[0]
 
     return extracted_id, canonical_url
 
@@ -141,6 +160,104 @@ def pick_best_video_url(video_info: dict, root_data: Optional[dict] = None) -> O
         video_url = video_url.replace("/playwm/", "/play/")
 
     return video_url
+
+
+async def _extract_aweme_result(
+    raw_url: str,
+    aweme_data: dict,
+    root_data: Optional[dict] = None,
+    client: Optional[httpx.AsyncClient] = None
+) -> Optional[ParsedResult]:
+    """Unified helper to parse Aweme data dict into ParsedResult."""
+    if not aweme_data or not isinstance(aweme_data, dict):
+        return None
+
+    raw_desc = aweme_data.get("desc", "")
+    aweme_id = str(aweme_data.get("aweme_id") or aweme_data.get("id") or (root_data.get("aweme_id") if root_data else "") or "")
+    
+    author_info = aweme_data.get("author") or {}
+    unique_id = author_info.get("unique_id") or author_info.get("short_id") or author_info.get("nickname")
+
+    # Check images (standard Douyin or TikTok format)
+    images = aweme_data.get("images") or []
+    if not images and "image_post_info" in aweme_data:
+        img_list = aweme_data.get("image_post_info", {}).get("images", [])
+        for im in img_list:
+            d_url = im.get("display_image", {}).get("url_list", [None])[0]
+            if d_url:
+                images.append({"url_list": [d_url]})
+
+    if images:
+        extracted_id, canonical_url = await resolve_canonical_info(
+            raw_url, aweme_id=aweme_id, unique_id=unique_id, is_image=True, client=client
+        )
+        assets = []
+        for img in images:
+            live_video = img.get("video") or {}
+            live_video_url = pick_best_video_url(live_video) if live_video else None
+
+            if live_video_url:
+                assets.append(MediaAsset(
+                    type="video",
+                    url=live_video_url,
+                    width=img.get("width"),
+                    height=img.get("height")
+                ))
+            else:
+                url_list = (
+                    img.get("url_list")
+                    or (img.get("display_image", {}).get("url_list") if isinstance(img.get("display_image"), dict) else None)
+                    or img.get("download_url_list")
+                    or []
+                )
+                if url_list:
+                    assets.append(MediaAsset(
+                        type="photo",
+                        url=url_list[-1],
+                        width=img.get("width"),
+                        height=img.get("height")
+                    ))
+        
+        if not assets:
+            return None
+
+        return ParsedResult(
+            title=raw_desc,
+            canonical_url=canonical_url,
+            media_type="image",
+            media_assets=assets,
+            aweme_id=extracted_id
+        )
+    else:
+        # Video format
+        video_info = aweme_data.get("video") or {}
+        video_url = pick_best_video_url(video_info, root_data=root_data or aweme_data)
+        if not video_url:
+            return None
+
+        cover_url = None
+        cover_obj = video_info.get("cover") or video_info.get("origin_cover") or {}
+        cover_url_list = cover_obj.get("url_list") or []
+        if cover_url_list:
+            cover_url = cover_url_list[0]
+
+        vid_width = video_info.get("width")
+        vid_height = video_info.get("height")
+
+        extracted_id, canonical_url = await resolve_canonical_info(
+            raw_url, aweme_id=aweme_id, unique_id=unique_id, is_image=False, client=client
+        )
+
+        return ParsedResult(
+            title=raw_desc,
+            canonical_url=canonical_url,
+            media_type="video",
+            video_url=video_url,
+            cover_url=cover_url,
+            video_width=vid_width,
+            video_height=vid_height,
+            aweme_id=extracted_id
+        )
 
 
 # =======================
@@ -206,96 +323,7 @@ class BuiltinCrawlerEngine:
         try:
             # Direct hybrid parsing with minimal=False for full details
             data = await self.hybrid_crawler.hybrid_parsing_single_video(url, minimal=False)
-            if not data or not isinstance(data, dict):
-                return None
-
-            raw_desc = data.get("desc", "")
-            aweme_id = str(data.get("aweme_id") or data.get("id") or "")
-            
-            # Author info
-            author_info = data.get("author") or {}
-            unique_id = author_info.get("unique_id") or author_info.get("short_id") or author_info.get("nickname")
-
-            # Check if images
-            images = data.get("images") or []
-            # TikTok image posts format
-            if not images and "image_post_info" in data:
-                img_list = data.get("image_post_info", {}).get("images", [])
-                for im in img_list:
-                    d_url = im.get("display_image", {}).get("url_list", [None])[0]
-                    if d_url:
-                        images.append({"url_list": [d_url]})
-
-            if images:
-                is_image = True
-                aweme_id, canonical_url = await resolve_canonical_info(
-                    url, aweme_id=aweme_id, unique_id=unique_id, is_image=True, client=client
-                )
-                assets = []
-                for img in images:
-                    live_video = img.get("video") or {}
-                    live_video_url = None
-                    if live_video:
-                        live_video_url = pick_best_video_url(live_video)
-
-                    if live_video_url:
-                        assets.append(MediaAsset(
-                            type="video",
-                            url=live_video_url,
-                            width=img.get("width"),
-                            height=img.get("height")
-                        ))
-                    else:
-                        url_list = img.get("url_list") or (img.get("display_image", {}).get("url_list") if isinstance(img.get("display_image"), dict) else None) or img.get("download_url_list") or []
-                        if url_list:
-                            assets.append(MediaAsset(
-                                type="photo",
-                                url=url_list[-1],
-                                width=img.get("width"),
-                                height=img.get("height")
-                            ))
-                
-                if not assets:
-                    return None
-
-                return ParsedResult(
-                    title=raw_desc,
-                    canonical_url=canonical_url,
-                    media_type="image",
-                    media_assets=assets,
-                    aweme_id=aweme_id
-                )
-            else:
-                # Video format
-                video_info = data.get("video") or {}
-                video_url = pick_best_video_url(video_info, root_data=data)
-                if not video_url:
-                    return None
-
-                cover_url = None
-                cover_obj = video_info.get("cover") or video_info.get("origin_cover") or {}
-                cover_url_list = cover_obj.get("url_list") or []
-                if cover_url_list:
-                    cover_url = cover_url_list[0]
-
-                vid_width = video_info.get("width")
-                vid_height = video_info.get("height")
-
-                aweme_id, canonical_url = await resolve_canonical_info(
-                    url, aweme_id=aweme_id, unique_id=unique_id, is_image=False, client=client
-                )
-
-                return ParsedResult(
-                    title=raw_desc,
-                    canonical_url=canonical_url,
-                    media_type="video",
-                    video_url=video_url,
-                    cover_url=cover_url,
-                    video_width=vid_width,
-                    video_height=vid_height,
-                    aweme_id=aweme_id
-                )
-
+            return await _extract_aweme_result(url, data, root_data=data, client=client)
         except Exception as e:
             logger.debug(f"内置 Evil0ctal 引擎解析失败 ({url}): {e}")
             return None
@@ -323,81 +351,7 @@ async def parse_with_external_api(url: str, client: httpx.AsyncClient) -> Option
         root_data = data.get("data") or {}
         aweme_detail = root_data.get("aweme_detail") if "aweme_detail" in root_data else root_data
 
-        raw_desc = aweme_detail.get("desc", "")
-        aweme_id = str(aweme_detail.get("aweme_id") or root_data.get("aweme_id") or "")
-        
-        author_info = aweme_detail.get("author") or {}
-        unique_id = author_info.get("unique_id") or author_info.get("short_id")
-
-        images = aweme_detail.get("images") or []
-        if images:
-            aweme_id, canonical_url = await resolve_canonical_info(
-                url, aweme_id=aweme_id, unique_id=unique_id, is_image=True, client=client
-            )
-            assets = []
-            for img in images:
-                live_video = img.get("video") or {}
-                live_video_url = None
-                if live_video:
-                    live_video_url = pick_best_video_url(live_video)
-
-                if live_video_url:
-                    assets.append(MediaAsset(
-                        type="video",
-                        url=live_video_url,
-                        width=img.get("width"),
-                        height=img.get("height")
-                    ))
-                else:
-                    url_list = img.get("url_list") or (img.get("display_image", {}).get("url_list") if isinstance(img.get("display_image"), dict) else None) or img.get("download_url_list") or []
-                    if url_list:
-                        assets.append(MediaAsset(
-                            type="photo",
-                            url=url_list[-1],
-                            width=img.get("width"),
-                            height=img.get("height")
-                        ))
-            
-            if not assets:
-                return None
-
-            return ParsedResult(
-                title=raw_desc,
-                canonical_url=canonical_url,
-                media_type="image",
-                media_assets=assets,
-                aweme_id=aweme_id
-            )
-        else:
-            video_info = aweme_detail.get("video") or {}
-            video_url = pick_best_video_url(video_info, root_data=root_data)
-            if not video_url:
-                return None
-
-            cover_url = None
-            cover_obj = video_info.get("cover") or video_info.get("origin_cover") or {}
-            cover_url_list = cover_obj.get("url_list") or []
-            if cover_url_list:
-                cover_url = cover_url_list[0]
-
-            vid_width = video_info.get("width")
-            vid_height = video_info.get("height")
-
-            aweme_id, canonical_url = await resolve_canonical_info(
-                url, aweme_id=aweme_id, unique_id=unique_id, is_image=False, client=client
-            )
-
-            return ParsedResult(
-                title=raw_desc,
-                canonical_url=canonical_url,
-                media_type="video",
-                video_url=video_url,
-                cover_url=cover_url,
-                video_width=vid_width,
-                video_height=vid_height,
-                aweme_id=aweme_id
-            )
-
+        return await _extract_aweme_result(url, aweme_detail, root_data=root_data, client=client)
     except Exception as e:
         logger.debug(f"外部 API 解析失败 ({url}): {e}")
         return None
@@ -411,8 +365,11 @@ async def parse_with_parsehub(url: str, client: httpx.AsyncClient) -> Optional[P
         from parsehub import ParseHub
         from parsehub.types.media_ref import VideoRef, ImageRef, LivePhotoRef, AniRef
 
+        # Select appropriate cookie based on target platform
+        cookie = TIKTOK_COOKIE if "tiktok" in url.lower() else DOUYIN_COOKIE
+
         ph = ParseHub()
-        result = await ph.parse(url, cookie=DOUYIN_COOKIE)
+        result = await ph.parse(url, cookie=cookie)
         if not result or not result.media:
             return None
 

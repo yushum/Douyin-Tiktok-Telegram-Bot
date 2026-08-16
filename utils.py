@@ -6,6 +6,7 @@ import uuid
 import aiofiles
 from typing import Optional
 from aiogram import Bot
+from aiogram.enums import ChatAction
 from aiogram.types import URLInputFile, FSInputFile, BufferedInputFile
 from aiogram.utils.media_group import MediaGroupBuilder
 
@@ -20,6 +21,7 @@ def get_shared_client() -> httpx.AsyncClient:
         _shared_client = httpx.AsyncClient(
             timeout=60.0,
             follow_redirects=True,
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20)
         )
     return _shared_client
 
@@ -30,19 +32,36 @@ async def close_shared_client():
         await _shared_client.aclose()
         _shared_client = None
 
-def build_caption(title: str, canonical_url: str) -> str:
-    """Build safe HTML caption with canonical hyperlink."""
-    safe_desc = html.escape(title.strip()) if title else ""
-    if safe_desc:
-        return f"<a href='{canonical_url}'>{safe_desc}</a>"
-    return f"<a href='{canonical_url}'>点击查看原视频/图集</a>"
+def build_caption(title: str, canonical_url: str, max_length: int = 950) -> str:
+    """Build safe HTML caption with canonical hyperlink and robust truncation for Telegram 1024 limit."""
+    raw_title = (title or "").strip()
+    if not raw_title:
+        return f"<a href='{canonical_url}'>点击查看原内容</a>"
+
+    # Pre-truncate title if too long
+    if len(raw_title) > 600:
+        raw_title = raw_title[:597] + "..."
+
+    safe_desc = html.escape(raw_title)
+    caption = f"<a href='{canonical_url}'>{safe_desc}</a>"
+
+    # Strict check against Telegram's 1024 char limit
+    if len(caption) > max_length:
+        safe_desc = html.escape(raw_title[:300]) + "..."
+        caption = f"<a href='{canonical_url}'>{safe_desc}</a>"
+
+    return caption
 
 async def _download_asset_to_buffer(client: httpx.AsyncClient, asset: MediaAsset, idx: int):
     """Download single media asset into memory buffer."""
     try:
-        res = await client.get(asset.url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+        res = await client.get(
+            asset.url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=30.0
+        )
         if res.status_code == 200:
-            ext = "webp" if asset.type == "photo" else "mp4"
+            ext = "mp4" if asset.type == "video" else "jpg"
             return {
                 "bytes": res.content,
                 "filename": f"media_{idx}.{ext}",
@@ -64,6 +83,11 @@ async def send_image_group(
     """Concurrently download and send images/live photos as MediaGroups."""
     client = get_shared_client()
     success = False
+
+    try:
+        await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
+    except Exception:
+        pass
 
     for i in range(0, len(media_assets), 10):
         chunk = media_assets[i:i + 10]
@@ -115,6 +139,11 @@ async def send_video_media(
 ) -> bool:
     """Send video via direct URL or local direct upload with Local API."""
     client = get_shared_client()
+
+    try:
+        await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_VIDEO)
+    except Exception:
+        pass
 
     # 1. Fetch thumbnail if present
     thumbnail_file = None
@@ -170,6 +199,12 @@ async def send_video_media(
             async with aiofiles.open(temp_filepath, "wb") as f:
                 async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
                     await f.write(chunk)
+
+        # Update chat action during upload
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_VIDEO)
+        except Exception:
+            pass
 
         local_video_file = FSInputFile(temp_filepath)
         await bot.send_video(
