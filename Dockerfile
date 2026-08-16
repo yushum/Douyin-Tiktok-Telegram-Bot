@@ -1,10 +1,10 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
 # 安装 git, ca-certificates 和基础构建依赖
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git ca-certificates gcc python3-dev && \
+    apt-get install -y --no-install-recommends git ca-certificates gcc g++ python3-dev liblz4-dev && \
     rm -rf /var/lib/apt/lists/*
 
 # 拉取 Evil0ctal 上游最新解析器核心
