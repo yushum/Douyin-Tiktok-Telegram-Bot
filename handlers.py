@@ -17,12 +17,24 @@ class WhiteListFilter(Filter):
     async def __call__(self, message: Message) -> bool:
         if not ALLOWED_CHAT_IDS:
             return True
-        if message.chat.id in ALLOWED_CHAT_IDS:
-            return True
-        if message.from_user and message.from_user.id in ALLOWED_CHAT_IDS:
-            return True
+
+        chat_type = message.chat.type
+        # 私聊场景：校验发送用户 ID 或 私聊 Chat ID
+        if chat_type == "private":
+            user_id = message.from_user.id if message.from_user else message.chat.id
+            if user_id in ALLOWED_CHAT_IDS or message.chat.id in ALLOWED_CHAT_IDS:
+                return True
+        # 群组/超级群场景：群组自身必须在白名单内方可响应
+        elif chat_type in ("group", "supergroup"):
+            if message.chat.id in ALLOWED_CHAT_IDS:
+                return True
+        # 频道场景：频道自身必须在白名单内方可响应
+        elif chat_type == "channel":
+            if message.chat.id in ALLOWED_CHAT_IDS:
+                return True
+
         logger.info(
-            f"白名单拦截: Chat_ID={message.chat.id}, "
+            f"白名单拦截: Chat_Type={chat_type}, Chat_ID={message.chat.id}, "
             f"User_ID={message.from_user.id if message.from_user else 'Unknown'}"
         )
         return False
