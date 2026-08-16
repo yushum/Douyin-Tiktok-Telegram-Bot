@@ -11,6 +11,48 @@ from collections.abc import Sequence
 from config import DOUYIN_COOKIE, TIKTOK_COOKIE, API_BASE_URL, UPSTREAM_API_PATH, logger
 
 # =======================
+# Compatibility Shim for Upstream Crawler (httpx >= 0.28 proxies kwarg removal)
+# =======================
+if not getattr(httpx, "_proxies_shim_applied", False):
+    _orig_async_init = httpx.AsyncClient.__init__
+    def _patched_async_init(self, *args, **kwargs):
+        if "proxies" in kwargs:
+            proxies = kwargs.pop("proxies")
+            if proxies and "proxy" not in kwargs:
+                if isinstance(proxies, str):
+                    kwargs["proxy"] = proxies
+                elif isinstance(proxies, dict):
+                    kwargs["proxy"] = (
+                        proxies.get("all://")
+                        or proxies.get("https://")
+                        or proxies.get("http://")
+                        or proxies.get("https")
+                        or proxies.get("http")
+                    )
+        return _orig_async_init(self, *args, **kwargs)
+
+    _orig_sync_init = httpx.Client.__init__
+    def _patched_sync_init(self, *args, **kwargs):
+        if "proxies" in kwargs:
+            proxies = kwargs.pop("proxies")
+            if proxies and "proxy" not in kwargs:
+                if isinstance(proxies, str):
+                    kwargs["proxy"] = proxies
+                elif isinstance(proxies, dict):
+                    kwargs["proxy"] = (
+                        proxies.get("all://")
+                        or proxies.get("https://")
+                        or proxies.get("http://")
+                        or proxies.get("https")
+                        or proxies.get("http")
+                    )
+        return _orig_sync_init(self, *args, **kwargs)
+
+    httpx.AsyncClient.__init__ = _patched_async_init
+    httpx.Client.__init__ = _patched_sync_init
+    httpx._proxies_shim_applied = True
+
+# =======================
 # Data Classes
 # =======================
 @dataclass
