@@ -11,6 +11,11 @@ on:
     tags:
       - 'v*.*.*'
   workflow_dispatch:
+    inputs:
+      upstream_commit:
+        description: 'Evil0ctal upstream commit hash'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -49,5 +54,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            UPSTREAM_COMMIT=${{ inputs.upstream_commit || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

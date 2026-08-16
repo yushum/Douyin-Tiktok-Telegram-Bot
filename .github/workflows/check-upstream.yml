@@ -66,6 +66,7 @@ jobs:
           fi
           
           echo "need_build=$NEED_BUILD" >> $GITHUB_OUTPUT
+          echo "evil_sha=$EVIL_SHA" >> $GITHUB_OUTPUT
 
       - name: Trigger Build Workflow
         if: steps.check_upstream.outputs.need_build == 'true'
@@ -77,5 +78,8 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'docker-publish.yml',
-              ref: 'master'
+              ref: 'master',
+              inputs: {
+                upstream_commit: '${{ steps.check_upstream.outputs.evil_sha }}'
+              }
             });

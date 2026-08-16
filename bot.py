@@ -6,9 +6,9 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 
-from config import BOT_TOKEN, LOCAL_API_SERVER, logger
+from config import BOT_TOKEN, LOCAL_API_SERVER, LOCAL_API_STORAGE_ENABLED, logger
 from handlers import router
-from utils import close_shared_client
+from utils import close_shared_client, cleanup_temp_dir
 
 async def setup_bot_commands(bot: Bot):
     """Register command suggestions menu in Telegram UI."""
@@ -23,9 +23,15 @@ async def setup_bot_commands(bot: Bot):
         logger.warning(f"注册 Telegram 快捷指令菜单失败: {e}")
 
 async def main():
+    # 启动时清理历史残留临时文件
+    cleanup_temp_dir()
+
     if LOCAL_API_SERVER:
         session = AiohttpSession(
-            api=TelegramAPIServer.from_base(LOCAL_API_SERVER, is_local=True)
+            api=TelegramAPIServer.from_base(
+                LOCAL_API_SERVER,
+                is_local=LOCAL_API_STORAGE_ENABLED
+            )
         )
         bot = Bot(token=BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     else:

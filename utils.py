@@ -1,4 +1,5 @@
 import os
+import time
 import html
 import httpx
 import asyncio
@@ -10,10 +11,12 @@ from aiogram.enums import ChatAction
 from aiogram.types import URLInputFile, FSInputFile, BufferedInputFile
 from aiogram.utils.media_group import MediaGroupBuilder
 
-from config import TEMP_DIR, logger
+from config import TEMP_DIR, LOCAL_API_STORAGE_ENABLED, logger
 from crawler_service import ParsedResult, MediaAsset
 
 _shared_client: Optional[httpx.AsyncClient] = None
+MAX_ASSET_SIZE = 50 * 1024 * 1024  # 50MB per media item in memory buffer
+_ASSET_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(5)
 
 def get_shared_client() -> httpx.AsyncClient:
     global _shared_client
@@ -34,6 +37,35 @@ async def close_shared_client():
     if _shared_client is not None:
         await _shared_client.aclose()
         _shared_client = None
+
+async def safe_delayed_remove(filepath: str, delay: int = 60):
+    """Safely delete temporary file after a delay to ensure Local API Server finished reading."""
+    try:
+        await asyncio.sleep(delay)
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            logger.debug(f"已安全清理临时视频文件: {filepath}")
+    except Exception as e:
+        logger.debug(f"延迟清理临时文件失败 ({filepath}): {e}")
+
+def cleanup_temp_dir(max_age_seconds: int = 3600):
+    """Clean up orphaned temporary files older than max_age_seconds on startup or background."""
+    try:
+        if not os.path.exists(TEMP_DIR):
+            return
+        now = time.time()
+        for fname in os.listdir(TEMP_DIR):
+            if fname.startswith("video_") or fname.startswith(".perm_test_"):
+                fpath = os.path.join(TEMP_DIR, fname)
+                if os.path.isfile(fpath):
+                    try:
+                        if now - os.path.getmtime(fpath) > max_age_seconds:
+                            os.remove(fpath)
+                            logger.info(f"清理过期临时文件: {fpath}")
+                    except Exception:
+                        pass
+    except Exception as e:
+        logger.warning(f"清理临时目录 ({TEMP_DIR}) 异常: {e}")
 
 def build_caption(title: str, canonical_url: str, max_length: int = 950) -> str:
     """Build safe HTML caption with canonical hyperlink and robust truncation for Telegram 1024 limit."""
@@ -56,26 +88,42 @@ def build_caption(title: str, canonical_url: str, max_length: int = 950) -> str:
 
     return caption
 
-async def _download_asset_to_buffer(client: httpx.AsyncClient, asset: MediaAsset, idx: int):
-    """Download single media asset into memory buffer."""
-    try:
-        res = await client.get(
-            asset.url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-            timeout=30.0
-        )
-        if res.status_code == 200:
-            ext = "mp4" if asset.type == "video" else "jpg"
-            return {
-                "bytes": res.content,
-                "filename": f"media_{idx}.{ext}",
-                "type": asset.type,
-                "width": asset.width,
-                "height": asset.height,
-            }
-    except Exception as e:
-        logger.debug(f"Download asset error: {e}")
-    return None
+async def _download_asset_to_buffer(client: httpx.AsyncClient, asset: MediaAsset, idx: int) -> Optional[dict]:
+    """Download single media asset into memory buffer with size and concurrency limits."""
+    async with _ASSET_DOWNLOAD_SEMAPHORE:
+        try:
+            async with client.stream(
+                "GET",
+                asset.url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                timeout=30.0
+            ) as resp:
+                if resp.status_code != 200:
+                    return None
+
+                content_length = resp.headers.get("content-length")
+                if content_length and int(content_length) > MAX_ASSET_SIZE:
+                    logger.warning(f"资源体积超出内存限制 ({content_length} bytes)，跳过下载: {asset.url}")
+                    return None
+
+                content = bytearray()
+                async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                    content.extend(chunk)
+                    if len(content) > MAX_ASSET_SIZE:
+                        logger.warning(f"流式下载超出最大限制 ({MAX_ASSET_SIZE} bytes)，中断: {asset.url}")
+                        return None
+
+                ext = "mp4" if asset.type == "video" else "jpg"
+                return {
+                    "bytes": bytes(content),
+                    "filename": f"media_{idx}.{ext}",
+                    "type": asset.type,
+                    "width": asset.width,
+                    "height": asset.height,
+                }
+        except Exception as e:
+            logger.debug(f"Download asset error: {e}")
+        return None
 
 async def send_image_group(
     bot: Bot,
@@ -93,8 +141,11 @@ async def send_image_group(
     except Exception:
         pass
 
-    for i in range(0, len(media_assets), 10):
-        chunk = media_assets[i:i + 10]
+    # Safety guard: cap max assets per request to prevent resource exhaustion
+    limited_assets = media_assets[:30]
+
+    for i in range(0, len(limited_assets), 10):
+        chunk = limited_assets[i:i + 10]
         download_tasks = [
             _download_asset_to_buffer(client, asset, i + idx)
             for idx, asset in enumerate(chunk)
@@ -263,11 +314,9 @@ async def send_video_media(
         logger.error(f"Failed to send video: {e}", exc_info=True)
         return False
     finally:
-        if os.path.exists(temp_filepath):
-            try:
-                os.remove(temp_filepath)
-            except Exception:
-                pass
+        # 采用异步延迟清理，确保 Local API Server 在后台读取并传输完毕后再删除磁盘文件
+        delay = 60 if LOCAL_API_STORAGE_ENABLED else 5
+        asyncio.create_task(safe_delayed_remove(temp_filepath, delay=delay))
 
 async def send_parsed_media(
     bot: Bot,

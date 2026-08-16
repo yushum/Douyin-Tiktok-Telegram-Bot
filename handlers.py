@@ -10,6 +10,7 @@ from utils import get_shared_client, send_parsed_media
 router = Router()
 URL_REGEX = re.compile(r"https?://[-A-Za-z0-9+&@#/%?=~_|!:,.;]+[-A-Za-z0-9+&@#/%=~_|]")
 SUPPORTED_DOMAINS = ["douyin", "tiktok", "snssdk", "iesdouyin", "b23.tv", "bilibili"]
+MAX_URLS_PER_MSG = 5  # 防 DoS: 单条消息最大处理链接数限制
 
 
 class WhiteListFilter(Filter):
@@ -50,15 +51,22 @@ async def handle_message(message: Message, bot: Bot):
     if not urls:
         return
 
-    # In groups/supergroups, only respond when relevant domains are present
-    if message.chat.type in ["group", "supergroup"]:
-        if not any(domain in url.lower() for url in urls for domain in SUPPORTED_DOMAINS):
-            return
+    # 防 DoS 与无关链接过滤：只保留受支持平台的 URL
+    valid_urls = [u for u in urls if any(domain in u.lower() for domain in SUPPORTED_DOMAINS)]
 
-    reply_msg = await message.reply(f"🔍 已识别到 {len(urls)} 个链接，正在处理中...", parse_mode=None)
+    if not valid_urls:
+        if message.chat.type == "private":
+            await message.reply("👋 未识别到支持的平台链接，请发送包含 抖音 或 TikTok 的分享链接。")
+        return
+
+    # 截断限制单次最大处理链接数量
+    if len(valid_urls) > MAX_URLS_PER_MSG:
+        valid_urls = valid_urls[:MAX_URLS_PER_MSG]
+
+    reply_msg = await message.reply(f"🔍 已识别到 {len(valid_urls)} 个链接，正在处理中...", parse_mode=None)
     client = get_shared_client()
 
-    for target_url in urls:
+    for target_url in valid_urls:
         try:
             result = await parse_url_multi_engine(target_url, client)
             if result:
@@ -74,7 +82,7 @@ async def handle_message(message: Message, bot: Bot):
                 await message.reply(f"❌ 解析失败: 未能获取到媒体资源 ({target_url})", parse_mode=None)
         except Exception as e:
             logger.error(f"处理链接异常 ({target_url}): {e}", exc_info=True)
-            await message.reply(f"❌ 处理异常: {e}", parse_mode=None)
+            await message.reply("❌ 处理异常，请稍后重试或检查链接是否有效。", parse_mode=None)
 
     # Delete processing status message
     if reply_msg:
@@ -91,13 +99,17 @@ async def handle_channel_post(message: Message, bot: Bot):
     if not urls:
         return
 
-    if not any(domain in url.lower() for url in urls for domain in SUPPORTED_DOMAINS):
+    valid_urls = [u for u in urls if any(domain in u.lower() for domain in SUPPORTED_DOMAINS)]
+    if not valid_urls:
         return
+
+    if len(valid_urls) > MAX_URLS_PER_MSG:
+        valid_urls = valid_urls[:MAX_URLS_PER_MSG]
 
     client = get_shared_client()
     success_count = 0
 
-    for target_url in urls:
+    for target_url in valid_urls:
         try:
             result = await parse_url_multi_engine(target_url, client)
             if result:
