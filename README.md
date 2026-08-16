@@ -67,4 +67,4 @@ docker compose up -d --build
 ## 🙏 致谢
 
 - [Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API) - 提供底层数据解析核心爬虫支持。
-- [ParseHub](https://github.com/parsehub/parsehub) - 提供降级与多媒体解析支持。
+- [ParseHub](https://github.com/z-mio/ParseHub) - 提供降级与多媒体解析支持。
