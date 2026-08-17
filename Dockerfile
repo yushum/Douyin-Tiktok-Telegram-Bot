@@ -32,10 +32,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# 安装运行时系统动态链接库依赖 (liblz4 与 CA 根证书)
+# 安装运行时系统动态链接库依赖 (liblz4, libjemalloc2 与 CA 根证书)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends liblz4-1 ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends liblz4-1 libjemalloc2 ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    find /usr/lib -name "libjemalloc.so.2" -exec ln -sf {} /usr/local/lib/libjemalloc.so.2 \;
 
 # 从 builder 复制已编译安装的 Python 依赖库
 COPY --from=builder /install /usr/local
@@ -46,8 +47,10 @@ COPY --from=builder /build/upstream_api /app/upstream_api
 # 复制 Bot 源代码
 COPY *.py .
 
-# 环境变量设置
+# 环境变量设置：启用 jemalloc 高效内存分配与后台脏页回收
 ENV PYTHONUNBUFFERED=1
 ENV UPSTREAM_API_PATH=/app/upstream_api
+ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so.2
+ENV MALLOC_CONF="background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:2000"
 
 CMD ["python", "bot.py"]

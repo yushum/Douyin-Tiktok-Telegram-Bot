@@ -52,4 +52,11 @@ async def on_shutdown(**kwargs):
     await close_shared_client()
 
 if __name__ == "__main__":
+    try:
+        import uvloop
+        uvloop.install()
+        logger.info("uvloop 高性能事件循环已启用。")
+    except (ImportError, AttributeError):
+        logger.info("未启用 uvloop，使用标准 asyncio 事件循环。")
+
     asyncio.run(main())
